@@ -1,0 +1,12 @@
+question,question_en,category,expected_source_url
+"Hadoop 개발 환경을 로컬에 구축하려면 어떤 사전 요구사항(자바 버전, Maven, Protobuf 등)이 필요한가요?","What prerequisites (Java version, Maven, Protobuf, etc.) are needed to set up a local Hadoop development environment?",정상,https://cwiki.apache.org/confluence/display/HADOOP2/HowToSetupYourDevelopmentEnvironment
+패치를 커밋할 때 커밋 메시지에는 어떤 정보를 포함해야 하나요?,What information should be included in the commit message when committing a patch?,정상,https://cwiki.apache.org/confluence/display/HADOOP2/HowToCommit
+코드 리뷰를 할 때 확인해야 하는 체크리스트 항목에는 어떤 것들이 있나요?,What checklist items should be checked during a code review?,정상,https://cwiki.apache.org/confluence/display/HADOOP2/CodeReviewChecklist
+새 릴리즈를 준비할 때 커미터가 가장 먼저 해야 하는 준비 작업은 무엇인가요?,What is the first preparation step a committer should take when preparing a new release?,정상,https://cwiki.apache.org/confluence/display/HADOOP2/HowToRelease
+우분투 빌드 머신에서 스냅샷 아티팩트를 배포하려면 어떤 설정 파일에 자격증명을 입력해야 하나요?,Which configuration file should credentials be entered into to deploy snapshot artifacts on an Ubuntu build machine?,정상,https://cwiki.apache.org/confluence/display/HADOOP2/HowToSetupUbuntuBuildMachine
+IntelliJ IDEA에서 Hadoop을 빌드하고 테스트하려면 지금은 어떤 방식을 쓰는 게 권장되나요?,What approach is now recommended for building and testing Hadoop in IntelliJ IDEA?,정상,https://cwiki.apache.org/confluence/display/HADOOP2/HadoopUnderIDEA
+Hadoop 프로젝트는 이슈 관리에 어떤 도구를 쓰고 이슈 작성 시 어떤 원칙을 따라야 하나요?,"What tool does the Hadoop project use for issue tracking, and what principles should be followed when filing an issue?",정상,https://cwiki.apache.org/confluence/display/HADOOP2/Jira
+Chukwa 데이터 흐름에서 Agent는 처음에 데이터를 어디에 기록하나요?,"In the Chukwa data flow, where does the Agent first write data to?",정상,https://cwiki.apache.org/confluence/display/HADOOP2/Chukwa+Processes+and+Data+Flow
+오늘 서울 날씨가 어떤가요?,What's the weather like in Seoul today?,범위밖,
+우리 회사 사내 VPN 접속 비밀번호를 알려주세요,Please tell me our company's internal VPN access password,범위밖,
+Kafka 클러스터에 새 Topic을 만드는 방법을 알려주세요,How do I create a new topic in a Kafka cluster?,범위밖,

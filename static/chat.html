@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>컨플루언스 온보딩 Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f6f8;
+      --bubble-user: #2563eb;
+      --bubble-user-text: #ffffff;
+      --bubble-bot: #ffffff;
+      --border: #e2e5ea;
+      --muted: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "Segoe UI", Pretendard, sans-serif;
+      background: var(--bg);
+      display: flex;
+      justify-content: center;
+    }
+    #app {
+      width: 100%;
+      max-width: 720px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bubble-bot);
+    }
+    header h1 { margin: 0; font-size: 16px; }
+    header p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+    #chat-log {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; font-size: 14px; }
+    .msg.user { align-self: flex-end; background: var(--bubble-user); color: var(--bubble-user-text); }
+    .msg.bot { align-self: flex-start; background: var(--bubble-bot); border: 1px solid var(--border); }
+    .msg.bot.pending { color: var(--muted); }
+    .msg.bot.error { border-color: #ef4444; color: #ef4444; }
+    .msg p:first-child { margin-top: 0; }
+    .msg p:last-child { margin-bottom: 0; }
+    .sources { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
+    .sources a { display: block; color: #2563eb; text-decoration: none; margin-top: 2px; }
+    .sources a:hover { text-decoration: underline; }
+    #query-form { display: flex; gap: 8px; padding: 16px; border-top: 1px solid var(--border); background: var(--bubble-bot); }
+    #question { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+    #query-form button {
+      padding: 10px 16px; border: none; border-radius: 8px;
+      background: var(--bubble-user); color: white; font-size: 14px; cursor: pointer;
+    }
+    #query-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>컨플루언스 온보딩 Agent</h1>
+      <p>온보딩 관련 질문을 입력하면 컨플루언스 문서를 찾아 답합니다.</p>
+    </header>
+
+    <main id="chat-log"></main>
+
+    <form id="query-form">
+      <input id="question" type="text" placeholder="예: 패치를 커밋할 때 커밋 메시지에 뭘 포함해야 하나요?" autocomplete="off" />
+      <button type="submit">전송</button>
+    </form>
+  </div>
+
+  <script>
+    // file:// 로 직접 열어도 동작하도록 절대 URL을 쓴다. 서버 포트를 바꿨다면 이 값도 맞춰준다.
+    const API_BASE = "http://127.0.0.1:8000";
+
+    const chatLog = document.getElementById("chat-log");
+    const form = document.getElementById("query-form");
+    const input = document.getElementById("question");
+    const button = form.querySelector("button");
+
+    function addMessage(text, role) {
+      const bubble = document.createElement("div");
+      bubble.className = `msg ${role}`;
+      bubble.textContent = text;
+      chatLog.appendChild(bubble);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return bubble;
+    }
+
+    function renderAnswer(bubble, answer, contexts) {
+      bubble.classList.remove("pending");
+      bubble.innerHTML = marked.parse(answer || "");
+
+      const uniqueSources = [];
+      const seen = new Set();
+      for (const ctx of contexts || []) {
+        if (ctx.url && !seen.has(ctx.url)) {
+          seen.add(ctx.url);
+          uniqueSources.push(ctx);
+        }
+      }
+      if (uniqueSources.length > 0) {
+        const sources = document.createElement("div");
+        sources.className = "sources";
+        sources.innerHTML =
+          "출처<br>" +
+          uniqueSources
+            .map((s) => `<a href="${s.url}" target="_blank" rel="noopener">${s.title || s.url}</a>`)
+            .join("");
+        bubble.appendChild(sources);
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+
+      addMessage(question, "user");
+      input.value = "";
+      input.disabled = true;
+      button.disabled = true;
+
+      const pending = addMessage("답변을 찾는 중입니다...", "bot pending");
+
+      try {
+        const response = await fetch(`${API_BASE}/query`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question }),
+        });
+        if (!response.ok) {
+          throw new Error(`서버 오류 (${response.status})`);
+        }
+        const data = await response.json();
+        renderAnswer(pending, data.answer, data.contexts);
+      } catch (error) {
+        pending.classList.remove("pending");
+        pending.classList.add("error");
+        pending.textContent = `오류가 발생했습니다: ${error.message}`;
+      } finally {
+        input.disabled = false;
+        button.disabled = false;
+        input.focus();
+      }
+    });
+  </script>
+</body>
+</html>

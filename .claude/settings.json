@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(curl -s \"https://cwiki.apache.org/confluence/rest/api/content/search?cql=space%3DHADOOP2%20AND%20text~%22commit%22&limit=3\")",
+      "Bash(\"../.venv/Scripts/python.exe\" -c \"import server; print\\('server.py imports OK:', server.app\\)\")",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip list)",
+      "Bash(\"./.venv/Scripts/python.exe\" -m pip show ruff)",
+      "Bash(\"../.venv/Scripts/python.exe\" crawl_confluence.py)",
+      "Bash(../.venv/Scripts/python.exe -c ' *)",
+      "Bash(\"../.venv/Scripts/python.exe\" -m py_compile crawl_confluence.py src/retriever.py src/agent.py src/tools.py server.py)"
+    ]
+  }
+}
