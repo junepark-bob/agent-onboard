@@ -42,13 +42,18 @@ SYSTEM_PROMPT = (
 class PerformanceTracker(AsyncCallbackHandler):
     """도구 호출과 LLM 호출이 각각 얼마나 걸렸는지 실행 순서대로 기록한다.
 
-    성능 분석용 계측이라 내용(입출력)은 담지 않고 이름과 소요 시간만 남긴다 — trace의
-    contexts/output 재구성은 기존 방식(메시지 순회 + rag_search 재호출)을 그대로 쓴다.
+    성공한 호출뿐 아니라 실패한 호출(쓰로틀링 등으로 on_tool_error/on_llm_error가 불린 경우)도
+    별도로 기록한다 — 실패한 시도는 wall-clock 시간(total_ms)에는 그대로 반영되지만 성공 케이스만
+    잡던 이전 버전에서는 어디로 사라졌는지 전혀 안 보였다(모델 폴백 중 쓰로틀링 재시도로 30초
+    가까이 사라진 사례로 발견). 성능 분석용 계측이라 내용(입출력)은 담지 않고 이름과 소요 시간만
+    남긴다 — trace의 contexts/output 재구성은 기존 방식(메시지 순회 + rag_search 재호출)을 그대로 쓴다.
     """
 
     def __init__(self) -> None:
         self.tool_events: list[dict[str, Any]] = []  # 실행 순서대로: {"name": str, "duration_ms": float}
+        self.failed_tool_events: list[dict[str, Any]] = []
         self.llm_durations_ms: list[float] = []
+        self.failed_llm_durations_ms: list[float] = []
         self._tool_starts: dict[UUID, tuple[str, float]] = {}
         self._llm_starts: dict[UUID, float] = {}
 
@@ -63,6 +68,13 @@ class PerformanceTracker(AsyncCallbackHandler):
         name, start = entry
         self.tool_events.append({"name": name, "duration_ms": round((time.perf_counter() - start) * 1000, 1)})
 
+    async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        entry = self._tool_starts.pop(run_id, None)
+        if entry is None:
+            return
+        name, start = entry
+        self.failed_tool_events.append({"name": name, "duration_ms": round((time.perf_counter() - start) * 1000, 1)})
+
     async def on_chat_model_start(self, serialized: dict[str, Any], messages: Any, *, run_id: UUID, **kwargs: Any) -> None:
         self._llm_starts[run_id] = time.perf_counter()
 
@@ -74,8 +86,13 @@ class PerformanceTracker(AsyncCallbackHandler):
         if start is not None:
             self.llm_durations_ms.append(round((time.perf_counter() - start) * 1000, 1))
 
+    async def on_llm_error(self, error: BaseException, *, run_id: UUID, **kwargs: Any) -> None:
+        start = self._llm_starts.pop(run_id, None)
+        if start is not None:
+            self.failed_llm_durations_ms.append(round((time.perf_counter() - start) * 1000, 1))
+
     def tool_ms(self, name: str) -> float:
-        """특정 도구(name) 호출들의 소요 시간 합을 반환한다."""
+        """특정 도구(name) 의 성공한 호출들의 소요 시간 합을 반환한다."""
         return round(sum(t["duration_ms"] for t in self.tool_events if t["name"] == name), 1)
 
 
@@ -110,8 +127,8 @@ def build_agent(model_id: str, mcp_tools: list[Any]) -> Any:
 async def run_query(question: str) -> dict:
     """질문을 받아 에이전트를 실행하고 SERVICE.md API 계약대로 answer/contexts/trace 를 반환한다.
 
-    질문이 한국어든 영어든 그대로 넘기면 된다. rag_search가 내부적으로 질의어와 그 번역본
-    둘 다 검색해 더 유사도가 높은 쪽을 채택하므로, 호출자가 언어를 미리 알려줄 필요는 없다.
+    질문이 한국어든 영어든 그대로 넘기면 된다. rag_search가 한국어 질의만 내부적으로 영어로
+    번역해 검색하므로, 호출자가 언어를 미리 알려줄 필요는 없다.
 
     Bedrock 쓰로틀링 등으로 모델 호출이 실패하면 MODEL_CANDIDATES 순서대로 다음 모델로
     자동 전환해 재시도한다. MCP 도구는 모델과 무관하므로 한 번만 가져와 재사용한다.
@@ -125,12 +142,15 @@ async def run_query(question: str) -> dict:
     mcp_tools = await _get_mcp_tools()
     mcp_setup_ms = round((time.perf_counter() - mcp_setup_start) * 1000, 1)
 
+    # 루프 밖에서 한 번만 만들어 모든 모델 시도(성공/실패 포함)의 이벤트를 누적한다 — 루프
+    # 안에서 매번 새로 만들면 실패한 시도의 기록(failed_llm_durations_ms 등)이 다음 시도로
+    # 넘어가기 전에 버려져서, 쓰로틀링 재시도에 쓴 실제 시간이 성능 요약에서 사라진다.
+    tracker = PerformanceTracker()
     result = None
     used_model = None
     last_error: Exception | None = None
     for model_id in MODEL_CANDIDATES:
         try:
-            tracker = PerformanceTracker()
             agent = build_agent(model_id, mcp_tools)
             result = await agent.ainvoke({"messages": [("user", question)]}, config={"callbacks": [tracker]})
             used_model = model_id
@@ -203,6 +223,10 @@ async def run_query(question: str) -> dict:
                 "mcp_setup_ms": mcp_setup_ms,
                 "llm_ms": round(sum(tracker.llm_durations_ms), 1),
                 "rag_ms": tracker.tool_ms("rag_search"),
+                # 실패한(쓰로틀링 등) 모델/도구 호출에 소모된 시간. 성공 호출만 잡는 위 지표들과
+                # 달리, 여기 잡히지 않으면 total_ms에는 남지만 원인 모를 "미계측 구간"이 된다.
+                "llm_failed_ms": round(sum(tracker.failed_llm_durations_ms), 1),
+                "tool_failed_ms": round(sum(t["duration_ms"] for t in tracker.failed_tool_events), 1),
             },
         }
     )
