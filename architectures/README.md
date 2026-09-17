@@ -21,6 +21,7 @@
 | [0011](0011-performance-optimization-round.md) | 성능 최적화 라운드 정리 — rag_search 중복 제거, boto3 재시도 축소, MCP/Chroma 클라이언트 캐싱 | 채택 |
 | [0012](0012-concise-answer-prompt.md) | 최종 답변을 간결하게 쓰도록 유도 — output 토큰 축소로 응답 시간 절감 | 채택 |
 | [0013](0013-reranking-not-adopted.md) | RAG 리랭킹 미채택 — 소규모 도메인에서 트레이드오프가 불리함 | 미채택 (판단 근거 기록) |
+| [0014](0014-google-ai-studio-fallback-provider.md) | Google AI Studio를 Bedrock 접근 종료 대비 대체 제공자로 추가 | 채택 |
 
 ## 참고
 각 ADR의 배경이 된 더 상세한 검토/실측 로그는 `data/documents/ISSUES.md`에 있습니다. 이 폴더의 ADR은 그 검토 결과를 "결정"으로 압축·정리한 버전입니다.

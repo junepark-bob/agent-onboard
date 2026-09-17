@@ -104,7 +104,8 @@ python -m src.evaluation.self_run_eval
 
 ### 요구사항
 - Python 3.11 이상이면 됩니다 (개발/검증은 3.14 기준으로 진행했습니다)
-- AWS Bedrock 접근 권한이 필요합니다 — `src/agent/models.py`의 `MODEL_CANDIDATES`(Claude Sonnet/Haiku, us./global. 추론 프로필, Amazon Nova)에 대한 모델 액세스, 임베딩은 `amazon.titan-embed-text-v2:0`, 리전은 `us-east-1`입니다
+- 기본값(`MODEL_PROVIDER=bedrock`)은 AWS Bedrock 접근 권한이 필요합니다 — `src/agent/models.py`의 `MODEL_CANDIDATES`(Claude Sonnet/Haiku, us./global. 추론 프로필, Amazon Nova)에 대한 모델 액세스, 임베딩은 `amazon.titan-embed-text-v2:0`, 리전은 `us-east-1`입니다
+- `MODEL_PROVIDER=google`로 바꾸면 Bedrock 없이 Google AI Studio API 키(`GOOGLE_API_KEY`)만으로 동작합니다 — 교육 기간이 끝나 Bedrock 접근이 끊긴 뒤를 대비한 대체 경로입니다(`architectures/0014-google-ai-studio-fallback-provider.md`)
 
 ### 설치
 이 저장소 루트에 공용 가상환경이 준비되어 있습니다. 루트에서 가상환경을 만드시고, 루트 + `mini-pjt` 두 requirements를 모두 설치해주세요.
@@ -122,12 +123,39 @@ pip install -r mini-pjt/requirements.txt
 
 | 변수 | 필수 여부 | 설명 |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID` | 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
-| `AWS_SECRET_ACCESS_KEY` | 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
-| `AWS_DEFAULT_REGION` | 필수 | `us-east-1`로 설정해주세요 |
+| `AWS_ACCESS_KEY_ID` | `MODEL_PROVIDER=bedrock`(기본값)일 때 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
+| `AWS_SECRET_ACCESS_KEY` | `MODEL_PROVIDER=bedrock`(기본값)일 때 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
+| `AWS_DEFAULT_REGION` | `MODEL_PROVIDER=bedrock`(기본값)일 때 필수 | `us-east-1`로 설정해주세요 |
 | `CONFLUENCE_BASE_URL` | 선택 | 기본값은 `https://cwiki.apache.org/confluence`입니다. 사내 컨플루언스로 바꾸실 때는 이 값만 교체하시면 됩니다 |
 | `CONFLUENCE_AUTH_TOKEN` | 선택 | ASF 공개 스페이스는 비워두셔도 됩니다. 인증이 필요한 인스턴스라면 Bearer 토큰을 지정해주세요 |
-| `TRANSLATION_BACKEND` | 선택 | 번역 백엔드입니다. 기본값은 `bedrock`이고, `local`로 지정하면 로컬 NLLB-200 모델을 씁니다(`torch`/`transformers` 필요, `architectures/0010-router-pattern-for-translation.md` 참고) |
+| `CONFLUENCE_SPACE_KEY` | 선택 | 기본값은 `HADOOP2`입니다. `search_confluence`(실시간 CQL 검색)를 이 스페이스로만 강제 제한합니다 — 지정하지 않으면 cwiki.apache.org 전체(수백 개 ASF 프로젝트)를 검색해버려서, 범위밖 질문에도 관련 없는 실제 문서를 찾아 답하는 문제가 있었습니다(`data/documents/ISSUES.md` 4절) |
+| `TRANSLATION_BACKEND` | 선택 | 번역 백엔드입니다. 기본값은 `MODEL_PROVIDER`를 따라가고(bedrock→bedrock, google→local), 명시하면 그 값이 우선합니다(`architectures/0010-router-pattern-for-translation.md` 참고) |
+| `MODEL_PROVIDER` | 선택 | 에이전트 본체 모델·RAG 임베딩 제공자입니다. 기본값은 `bedrock`이고, `google`로 지정하면 Google AI Studio(Gemini)를 씁니다 — 교육 종료로 Bedrock 접근이 끊겨도 이 값만 바꾸면 계속 동작합니다(`architectures/0014-google-ai-studio-fallback-provider.md` 참고) |
+| `GOOGLE_API_KEY` | `MODEL_PROVIDER=google`일 때 필수 | Google AI Studio API 키입니다. [Google AI Studio](https://aistudio.google.com/)에서 발급받으실 수 있습니다 |
+
+**`.env` 예시** (저장소 루트, 즉 `mini-pjt`의 상위 폴더에 둡니다)
+
+```bash
+# --- 기본값: Bedrock 제공자 (AX 교육 기간에 이걸 씁니다) ---
+AWS_ACCESS_KEY_ID=여기에_액세스_키
+AWS_SECRET_ACCESS_KEY=여기에_시크릿_키
+AWS_DEFAULT_REGION=us-east-1
+# MODEL_PROVIDER는 생략하면 자동으로 bedrock입니다.
+
+# --- 선택: Google AI Studio로 전환할 때만 추가하고, 위 AWS_* 세 줄은 그대로 둬도 됩니다 ---
+# MODEL_PROVIDER=google
+# GOOGLE_API_KEY=여기에_Google_AI_Studio_API_키
+
+# --- 선택: 컨플루언스 접속 정보 (기본값은 Apache Hadoop 공개 위키) ---
+# CONFLUENCE_BASE_URL=https://cwiki.apache.org/confluence
+# CONFLUENCE_AUTH_TOKEN=
+# CONFLUENCE_SPACE_KEY=HADOOP2
+
+# --- 선택: 번역 백엔드를 수동으로 고정하고 싶을 때만 ---
+# TRANSLATION_BACKEND=local
+```
+
+`#`으로 주석 처리된 줄은 값을 넣지 않으면 코드에 있는 기본값을 그대로 씁니다. `MODEL_PROVIDER=google`로 전환하실 때는 주석만 풀고 `GOOGLE_API_KEY`를 채우시면 되고, AWS 자격 증명 줄은 지우실 필요 없습니다(그냥 안 쓰일 뿐입니다).
 
 ### API 계약
 ```

@@ -7,22 +7,14 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from botocore.exceptions import ClientError
 from langchain.agents import create_agent
-from langchain_aws import ChatBedrockConverse
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from . import retriever
-from .models import MODEL_CANDIDATES, REGION
+from .llm_factory import active_model_candidates, build_chat_model, is_retryable_error
 
 TOOLS_SERVER_PATH = Path(__file__).parent / "tools.py"
-
-TEMPERATURE = 0  # 평가 재현성을 위해 고정
-# 시스템 프롬프트의 "간결하게 써라" 지침으로 답변은 보통 400 토큰 안팎에서 끝난다(실측). 여기서는
-# 그 자연스러운 완결을 방해하지 않을 만큼 넉넉한 상한만 안전망으로 둔다 - 완결된 문장을 자르는
-# 하드 컷오프로 쓰려는 게 아니다(architectures/0012 참고).
-MAX_OUTPUT_TOKENS = 1000
 
 SYSTEM_PROMPT = (
     "너는 한국 기업 SI/SM 프로젝트의 사내 온보딩 어시스턴트다. "
@@ -146,17 +138,12 @@ async def warmup() -> None:
 def build_agent(model_id: str, mcp_tools: list[Any]) -> Any:
     """지정한 모델과 rag_search + MCP 도구로 create_agent 인스턴스를 만든다.
 
-    max_retries=1로 boto3 자체 재시도를 끄고 즉시 실패하게 한다 — 안 그러면 쓰로틀링 한 번마다
-    boto3가 내부적으로 최대 4회 지수 백오프 재시도를 다 마친 뒤에야 실패를 넘겨줘서, 우리 코드의
-    MODEL_CANDIDATES 폴백으로 넘어가기까지 실측 10초 이상이 걸렸다.
+    실제 모델 인스턴스 생성은 llm_factory.build_chat_model()에 위임한다 — 현재 MODEL_PROVIDER
+    (bedrock 기본값 | google)에 맞는 클라이언트를 만들어준다. max_retries=1로 SDK 자체 재시도를
+    끄고 즉시 실패하게 한다 — 안 그러면 쓰로틀링 한 번마다 SDK가 내부적으로 여러 번 재시도를
+    다 마친 뒤에야 실패를 넘겨줘서, 우리 코드의 모델 폴백으로 넘어가기까지 실측 10초 이상이 걸렸다.
     """
-    model = ChatBedrockConverse(
-        model=model_id,
-        region_name=REGION,
-        temperature=TEMPERATURE,
-        max_retries=1,
-        max_tokens=MAX_OUTPUT_TOKENS,
-    )
+    model = build_chat_model(model_id)
     return create_agent(model, tools=[retriever.rag_search, *mcp_tools], system_prompt=SYSTEM_PROMPT)
 
 
@@ -166,8 +153,8 @@ async def run_query(question: str) -> dict:
     질문이 한국어든 영어든 그대로 넘기면 된다. rag_search가 한국어 질의만 내부적으로 영어로
     번역해 검색하므로, 호출자가 언어를 미리 알려줄 필요는 없다.
 
-    Bedrock 쓰로틀링 등으로 모델 호출이 실패하면 MODEL_CANDIDATES 순서대로 다음 모델로
-    자동 전환해 재시도한다. MCP 도구는 모델과 무관하므로 한 번만 가져와 재사용한다.
+    모델 호출이 쓰로틀링 등으로 실패하면 현재 제공자(MODEL_PROVIDER)의 후보 목록 순서대로
+    다음 모델로 자동 전환해 재시도한다. MCP 도구는 모델과 무관하므로 한 번만 가져와 재사용한다.
 
     trace에는 각 단계의 결과뿐 아니라 실제 소요 시간(duration_ms)도 함께 담아, 성능 분석에
     쓸 수 있게 한다.
@@ -185,13 +172,16 @@ async def run_query(question: str) -> dict:
     result = None
     used_model = None
     last_error: Exception | None = None
-    for model_id in MODEL_CANDIDATES:
+    candidates = active_model_candidates()
+    for model_id in candidates:
         try:
             agent = build_agent(model_id, mcp_tools)
             result = await agent.ainvoke({"messages": [("user", question)]}, config={"callbacks": [tracker]})
             used_model = model_id
             break
-        except ClientError as exc:
+        except Exception as exc:
+            if not is_retryable_error(exc):
+                raise
             last_error = exc
             print(f"[모델 폴백] {model_id} 실패({exc}), 다음 모델로 재시도합니다.")
     if result is None:
@@ -212,7 +202,7 @@ async def run_query(question: str) -> dict:
         queue = durations_by_name.get(name)
         return queue.pop(0) if queue else None
 
-    trace: list[dict] = [{"step": "model_select", "input": MODEL_CANDIDATES, "output": used_model}]
+    trace: list[dict] = [{"step": "model_select", "input": candidates, "output": used_model}]
     contexts: list[dict] = []
     for message in result["messages"]:
         for call in getattr(message, "tool_calls", None) or []:

@@ -8,7 +8,8 @@
       "Bash(\"./.venv/Scripts/python.exe\" -m pip show ruff)",
       "Bash(\"../.venv/Scripts/python.exe\" crawl_confluence.py)",
       "Bash(../.venv/Scripts/python.exe -c ' *)",
-      "Bash(\"../.venv/Scripts/python.exe\" -m py_compile crawl_confluence.py src/retriever.py src/agent.py src/tools.py server.py)"
+      "Bash(\"../.venv/Scripts/python.exe\" -m py_compile crawl_confluence.py src/retriever.py src/agent.py src/tools.py server.py)",
+      "Bash(\"/c/Users/SDS/Desktop/sds-ax-practice/.venv/Scripts/python.exe\" -m pip install langchain-google-genai)"
     ]
   }
 }

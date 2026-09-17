@@ -22,9 +22,12 @@ load_dotenv()
 
 REGION = "us-east-1"
 
-# "bedrock"(기본값) 또는 "local". .env 나 환경 변수로 TRANSLATION_BACKEND=local 을 지정하면
-# 로컬 NLLB-200 모델을 쓴다.
-TRANSLATION_BACKEND = os.environ.get("TRANSLATION_BACKEND", "bedrock")
+# "bedrock" 또는 "local". 기본값은 MODEL_PROVIDER를 따른다 - MODEL_PROVIDER=google(Bedrock
+# 접근이 없는 상황)이면 번역도 자동으로 local(NLLB-200)을 기본값으로 삼는다. TRANSLATION_BACKEND를
+# 명시적으로 지정하면 그 값이 항상 우선한다.
+_MODEL_PROVIDER = os.environ.get("MODEL_PROVIDER", "bedrock")
+_DEFAULT_TRANSLATION_BACKEND = "bedrock" if _MODEL_PROVIDER == "bedrock" else "local"
+TRANSLATION_BACKEND = os.environ.get("TRANSLATION_BACKEND", _DEFAULT_TRANSLATION_BACKEND)
 
 _HANGUL_PATTERN = re.compile(r"[가-힣]")
 
