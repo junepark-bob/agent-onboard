@@ -55,6 +55,13 @@
     .sources { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; }
     .sources a { display: block; color: #2563eb; text-decoration: none; margin-top: 2px; }
     .sources a:hover { text-decoration: underline; }
+    .translate-btn {
+      margin-top: 8px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px;
+      background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+    }
+    .translate-btn:hover { background: var(--bg); }
+    .translate-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .translated { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
     #query-form { display: flex; gap: 8px; padding: 16px; border-top: 1px solid var(--border); background: var(--bubble-bot); }
     #question { flex: 1; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
     #query-form button {
@@ -97,9 +104,48 @@
       return bubble;
     }
 
+    // 한글 음절이 하나도 없으면 영어(또는 다른 비한글) 답변으로 본다.
+    function containsKorean(text) {
+      return /[가-힣]/.test(text || "");
+    }
+
+    function addTranslateButton(bubble, answer) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "translate-btn";
+      button.textContent = "한국어로 보기";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        button.textContent = "번역 중...";
+        try {
+          const response = await fetch(`${API_BASE}/translate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: answer }),
+          });
+          if (!response.ok) throw new Error(`서버 오류 (${response.status})`);
+          const data = await response.json();
+          const translated = document.createElement("div");
+          translated.className = "translated";
+          translated.innerHTML = marked.parse(data.translated || "");
+          button.replaceWith(translated);
+        } catch (error) {
+          button.disabled = false;
+          button.textContent = "번역 실패, 다시 시도";
+        }
+      });
+      bubble.appendChild(button);
+    }
+
     function renderAnswer(bubble, answer, contexts) {
       bubble.classList.remove("pending");
       bubble.innerHTML = marked.parse(answer || "");
+
+      // 답변을 항상 한국어로 강제 재번역하지 않는 정책(성능 우선)이라, 영어로 나온 답변은
+      // 버튼을 눌렀을 때만 온디맨드로 번역 요청한다.
+      if (answer && !containsKorean(answer)) {
+        addTranslateButton(bubble, answer);
+      }
 
       const uniqueSources = [];
       const seen = new Set();

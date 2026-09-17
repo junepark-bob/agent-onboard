@@ -12,7 +12,7 @@
 ## 아키텍처 구성 (5파트)
 모든 파이썬 코드는 `src/` 아래에 있다. `data/`, `evaluation/`, `static/`은 코드가 아닌 산출물(문서/데이터/UI)만 둔다.
 1. **AI 에이전트 파트** — `src/agent/` 서브패키지(`agent.py`, `tools.py`, `retriever.py`, `models.py`)
-2. **모델 서빙 FastAPI 서버 파트** — `src/server/server.py`, `POST /query` 하나만 제공
+2. **모델 서빙 FastAPI 서버 파트** — `src/server/server.py`, `POST /query`(운영 계약)와 `POST /translate`(채팅 UI의 온디맨드 번역용, 계약 외 추가 엔드포인트)를 제공
 3. **UI 파트** — `static/chat.html` 하나. 빌드 없이 CDN include 로 채팅 UI 구성
 4. **크롤링 & RAG 구축 파트** — `src/crawler/crawl_confluence.py` (data/urls.txt 를 읽어 data/raw/ 에 수집, 첨부 이미지는 저비용 비전 모델로 분류·텍스트화해 본문에 삽입) + `src/agent/retriever.py` 의 인덱싱 함수 (data/raw/ → chroma_db 임베딩)
 5. **평가 파트** — `src/evaluation/`: `llm_judge.py`/`run_eval.py`(운영 스키마 test_queries.csv → round1/2_report.md), `self_llm_judge.py`/`self_run_eval.py`(자체 출처-정확성 스키마 test_self_queries.csv → self_test_round1/2_report.md), `ragas_eval.py`(RAGAS 지표 계산)
@@ -60,6 +60,10 @@ python -m src.evaluation.self_run_eval
   합계)와 `api`(API 요청 수신·응답 시각, 왕복 시간) 단계가 추가된다 — 계약의 3키 구조는 그대로다.
 - 요청마다 성능 지표 한 줄이 루트의 `performance_trace.jsonl`에도 append 된다 (실행 환경마다
   달라지는 로그라 gitignore 대상).
+- 답변은 질문과 같은 언어로 나온다(강제 한국어 번역 없음). RAG 검색은 대상 문서가 전부 영어라
+  항상 영어로만 하고, 한국어 질의는 내부에서 영어로 번역해 검색한다. 답변을 한국어로 보고
+  싶으면 `POST /translate`(별도 엔드포인트)로 온디맨드 번역을 요청한다
+  (`architectures/0009-english-only-domain-language-policy.md`).
 
 ## 코드 규칙
 - 파일 하나에 한 가지 역할만 둔다

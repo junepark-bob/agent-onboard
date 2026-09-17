@@ -2,5 +2,6 @@
 
 from .agent import run_query
 from .models import MODEL_CANDIDATES, REGION
+from .retriever import translate
 
-__all__ = ["run_query", "MODEL_CANDIDATES", "REGION"]
+__all__ = ["run_query", "MODEL_CANDIDATES", "REGION", "translate"]
