@@ -19,6 +19,10 @@ from .models import MODEL_CANDIDATES, REGION
 TOOLS_SERVER_PATH = Path(__file__).parent / "tools.py"
 
 TEMPERATURE = 0  # 평가 재현성을 위해 고정
+# 시스템 프롬프트의 "간결하게 써라" 지침으로 답변은 보통 400 토큰 안팎에서 끝난다(실측). 여기서는
+# 그 자연스러운 완결을 방해하지 않을 만큼 넉넉한 상한만 안전망으로 둔다 - 완결된 문장을 자르는
+# 하드 컷오프로 쓰려는 게 아니다(architectures/0012 참고).
+MAX_OUTPUT_TOKENS = 1000
 
 SYSTEM_PROMPT = (
     "너는 한국 기업 SI/SM 프로젝트의 사내 온보딩 어시스턴트다. "
@@ -36,7 +40,11 @@ SYSTEM_PROMPT = (
     "질문이 짧거나 모호해서 여러 의미로 해석될 수 있으면(예: '설정 파일이 뭐예요?'), "
     "검색 결과 중 하나를 임의로 골라 그것이 정답인 것처럼 단정하지 마라. "
     "대신 질문이 모호하다는 점을 먼저 밝히고, 검색으로 찾은 후보들을 '~을 말씀하시는 거라면' 식으로 "
-    "제시한 뒤 더 구체적으로 알려주면 정확히 답하겠다고 안내하라."
+    "제시한 뒤 더 구체적으로 알려주면 정확히 답하겠다고 안내하라. "
+    "답변은 간결하게 써라 — 출처 링크를 이미 함께 제공하니, 본문에 원문을 길게 옮겨 적거나 "
+    "여러 항목을 장황하게 나열하지 말고 핵심만 정리해라. 다만 질문이 요구하는 구체적인 수치·이름·조건"
+    "(버전, 파일명, 절차명 등)은 절대 생략하지 말고 반드시 포함해라. 답변은 중간에 끊기지 않고 "
+    "완결된 문장으로 끝나야 한다."
 )
 
 
@@ -142,7 +150,13 @@ def build_agent(model_id: str, mcp_tools: list[Any]) -> Any:
     boto3가 내부적으로 최대 4회 지수 백오프 재시도를 다 마친 뒤에야 실패를 넘겨줘서, 우리 코드의
     MODEL_CANDIDATES 폴백으로 넘어가기까지 실측 10초 이상이 걸렸다.
     """
-    model = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=TEMPERATURE, max_retries=1)
+    model = ChatBedrockConverse(
+        model=model_id,
+        region_name=REGION,
+        temperature=TEMPERATURE,
+        max_retries=1,
+        max_tokens=MAX_OUTPUT_TOKENS,
+    )
     return create_agent(model, tools=[retriever.rag_search, *mcp_tools], system_prompt=SYSTEM_PROMPT)
 
 
