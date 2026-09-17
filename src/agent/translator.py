@@ -88,7 +88,7 @@ def _translate_bedrock(text: str) -> str:
     last_error: Exception | None = None
     for model_id in MODEL_CANDIDATES:
         try:
-            llm = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=0)
+            llm = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=0, max_retries=1)
             return llm.invoke(prompt).content.strip()
         except ClientError as exc:
             last_error = exc

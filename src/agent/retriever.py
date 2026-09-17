@@ -1,6 +1,7 @@
 """data/raw/ 의 문서를 chroma_db로 임베딩하고 의미 검색을 제공하는 RAG 파이프라인."""
 
 import json
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -66,13 +67,33 @@ def build_index(raw_dir: Path = RAW_DIR, persist_dir: Path = PERSIST_DIR) -> Non
     )
 
 
+_vectorstore_cache: Chroma | None = None
+_vectorstore_lock = threading.Lock()
+
+
+def _get_vectorstore() -> Chroma:
+    """chroma_db 벡터스토어 클라이언트를 프로세스당 한 번만 만들어 재사용한다.
+
+    매 호출마다 새 Chroma(PersistentClient) 인스턴스를 만들고 버리면, chromadb의
+    SharedSystemClient 클래스 전역 캐시가 생성/해제를 빠르게 반복하면서 간헐적으로
+    KeyError/AttributeError가 나는 걸 실측으로 확인했다(`data/documents/ISSUES.md`).
+    `rag_search`는 LangChain이 스레드풀에서 동기 실행하므로, 락으로 동시 생성을 막는다.
+    """
+    global _vectorstore_cache
+    if _vectorstore_cache is None:
+        with _vectorstore_lock:
+            if _vectorstore_cache is None:
+                _vectorstore_cache = Chroma(
+                    collection_name=COLLECTION_NAME,
+                    embedding_function=_embeddings(),
+                    persist_directory=str(PERSIST_DIR),
+                )
+    return _vectorstore_cache
+
+
 def _vector_search(query: str, k: int) -> list[dict]:
     """번역 없이, 주어진 질의어 그대로 chroma_db를 검색해 title/url/content/score 목록을 반환한다."""
-    vectorstore = Chroma(
-        collection_name=COLLECTION_NAME,
-        embedding_function=_embeddings(),
-        persist_directory=str(PERSIST_DIR),
-    )
+    vectorstore = _get_vectorstore()
     results = vectorstore.similarity_search_with_score(query, k=k)
     return [
         {

@@ -1,5 +1,6 @@
 """RAG 검색과 Confluence MCP 도구를 묶어 온보딩 질문에 답하는 단일 ReAct 에이전트."""
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -46,7 +47,7 @@ class PerformanceTracker(AsyncCallbackHandler):
     별도로 기록한다 — 실패한 시도는 wall-clock 시간(total_ms)에는 그대로 반영되지만 성공 케이스만
     잡던 이전 버전에서는 어디로 사라졌는지 전혀 안 보였다(모델 폴백 중 쓰로틀링 재시도로 30초
     가까이 사라진 사례로 발견). 성능 분석용 계측이라 내용(입출력)은 담지 않고 이름과 소요 시간만
-    남긴다 — trace의 contexts/output 재구성은 기존 방식(메시지 순회 + rag_search 재호출)을 그대로 쓴다.
+    남긴다 — trace의 contexts/output 재구성은 실제 ToolMessage 내용을 그대로 재사용한다(재호출 없음).
     """
 
     def __init__(self) -> None:
@@ -104,23 +105,44 @@ def _get_text(message: Any) -> str:
     return content
 
 
+_mcp_tools_cache: list[Any] | None = None
+
+
 async def _get_mcp_tools() -> list[Any]:
-    """tools.py를 stdio MCP 서버로 띄워 get_page/search_confluence 도구를 가져온다."""
-    client = MultiServerMCPClient(
-        {
-            "confluence": {
-                "command": sys.executable,
-                "args": [str(TOOLS_SERVER_PATH)],
-                "transport": "stdio",
+    """tools.py를 stdio MCP 서버로 띄워 get_page/search_confluence 도구를 가져온다.
+
+    프로세스당 한 번만 생성해서 재사용한다(모듈 전역 캐시) — 매 요청마다 새 stdio
+    서브프로세스를 띄우면 요청 내용과 무관한 순수 오버헤드(실측 2.2~2.5초)가 매번 추가된다.
+    서버는 기동 시 warmup()으로 미리 채워서, 첫 요청부터 이 캐시를 그대로 쓴다.
+    """
+    global _mcp_tools_cache
+    if _mcp_tools_cache is None:
+        client = MultiServerMCPClient(
+            {
+                "confluence": {
+                    "command": sys.executable,
+                    "args": [str(TOOLS_SERVER_PATH)],
+                    "transport": "stdio",
+                }
             }
-        }
-    )
-    return await client.get_tools()
+        )
+        _mcp_tools_cache = await client.get_tools()
+    return _mcp_tools_cache
+
+
+async def warmup() -> None:
+    """MCP 도구를 미리 만들어 캐시를 채운다. FastAPI 서버가 기동 시(lifespan) 한 번 호출한다."""
+    await _get_mcp_tools()
 
 
 def build_agent(model_id: str, mcp_tools: list[Any]) -> Any:
-    """지정한 모델과 rag_search + MCP 도구로 create_agent 인스턴스를 만든다."""
-    model = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=TEMPERATURE)
+    """지정한 모델과 rag_search + MCP 도구로 create_agent 인스턴스를 만든다.
+
+    max_retries=1로 boto3 자체 재시도를 끄고 즉시 실패하게 한다 — 안 그러면 쓰로틀링 한 번마다
+    boto3가 내부적으로 최대 4회 지수 백오프 재시도를 다 마친 뒤에야 실패를 넘겨줘서, 우리 코드의
+    MODEL_CANDIDATES 폴백으로 넘어가기까지 실측 10초 이상이 걸렸다.
+    """
+    model = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=TEMPERATURE, max_retries=1)
     return create_agent(model, tools=[retriever.rag_search, *mcp_tools], system_prompt=SYSTEM_PROMPT)
 
 
@@ -181,7 +203,11 @@ async def run_query(question: str) -> dict:
     for message in result["messages"]:
         for call in getattr(message, "tool_calls", None) or []:
             if call["name"] == "rag_search":
-                hits = retriever.rag_search(**call["args"])
+                # rag_search를 다시 부르지 않고, 실제 실행 결과(ToolMessage, JSON 문자열)를
+                # 그대로 파싱해 재사용한다 — 재호출하면 번역+벡터검색이 요청당 실질적으로
+                # 두 번 돌아 시간과 비용이 배로 든다(architectures/0008 참고).
+                parsed = json.loads(tool_outputs.get(call["id"], "[]"))
+                hits = parsed if isinstance(parsed, list) else [parsed]
                 trace.append(
                     {
                         "step": "retrieve",

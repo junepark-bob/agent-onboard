@@ -2,6 +2,8 @@
 
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,13 +14,21 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ..agent import run_query, translate
+from ..agent import run_query, translate, warmup
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # src/server -> src -> mini-pjt 루트
 STATIC_DIR = PROJECT_ROOT / "static"
 PERFORMANCE_LOG_PATH = PROJECT_ROOT / "performance_trace.jsonl"
 
-app = FastAPI(title="컨플루언스 온보딩 Agent")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """서버 기동 시 MCP 도구를 한 번 미리 띄워둔다 — 안 그러면 첫 요청이 그 기동 비용을 문다."""
+    await warmup()
+    yield
+
+
+app = FastAPI(title="컨플루언스 온보딩 Agent", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # static/chat.html을 file:// 로 직접 열어도 호출할 수 있도록 모든 출처를 허용한다.

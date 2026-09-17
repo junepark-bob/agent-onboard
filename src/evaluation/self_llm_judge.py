@@ -51,7 +51,7 @@ def _invoke_judge(prompt: str) -> JudgeResult:
     last_error: Exception | None = None
     for model_id in JUDGE_MODEL_CANDIDATES:
         try:
-            llm = ChatBedrockConverse(model=model_id, region_name=JUDGE_REGION, temperature=0)
+            llm = ChatBedrockConverse(model=model_id, region_name=JUDGE_REGION, temperature=0, max_retries=1)
             return llm.with_structured_output(JudgeResult).invoke(prompt)
         except ClientError as exc:
             last_error = exc

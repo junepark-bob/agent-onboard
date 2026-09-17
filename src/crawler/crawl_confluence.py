@@ -135,7 +135,7 @@ def describe_image(image_bytes: bytes) -> str:
     last_error: Exception | None = None
     for model_id in VISION_MODEL_CANDIDATES:
         try:
-            llm = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=0)
+            llm = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=0, max_retries=1)
             return llm.invoke([message]).content.strip()
         except Exception as exc:  # noqa: BLE001 - 쓰로틀링/모델 미지원 등 이유와 무관하게 다음 후보로 넘어간다
             last_error = exc
