@@ -22,8 +22,9 @@ TRANSLATE_PROMPT = (
     "If it is written in English, translate it to Korean. Reply with only the translated "
     "text and nothing else.\n\n{text}"
 )
-RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
-PERSIST_DIR = Path(__file__).parent.parent / "chroma_db"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # src/agent -> src -> mini-pjt 루트
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+PERSIST_DIR = PROJECT_ROOT / "chroma_db"
 COLLECTION_NAME = "confluence_onboarding"
 SIMILARITY_THRESHOLD = 0.3
 # 주의: 검색어는 반드시 영어여야 한다. 한국어 질의는 Titan Embed v2 cross-lingual 유사도가

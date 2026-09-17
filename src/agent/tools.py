@@ -17,6 +17,7 @@ load_dotenv()
 
 CONFLUENCE_BASE_URL = os.environ.get("CONFLUENCE_BASE_URL", "https://cwiki.apache.org/confluence")
 CONFLUENCE_AUTH_TOKEN = os.environ.get("CONFLUENCE_AUTH_TOKEN")  # ASF 공개 스페이스는 비워둬도 됨
+CONFLUENCE_SPACE_KEY = os.environ.get("CONFLUENCE_SPACE_KEY", "HADOOP2")
 
 DISPLAY_URL_PATTERN = re.compile(r"/display/([^/]+)/([^/]+)/?$")
 
@@ -76,10 +77,14 @@ def search_confluence(cql: str) -> list[dict]:
 
     반환된 id는 get_page(id) 로 바로 전달해 전체 본문을 조회할 수 있다.
     RAG 검색(rag_search)이 부족할 때의 폴백으로만 사용한다.
+    검색은 항상 CONFLUENCE_SPACE_KEY(기본값 HADOOP2)로 범위를 제한한다 — cwiki.apache.org에는
+    수백 개의 다른 ASF 프로젝트 스페이스가 있어서, 범위를 안 걸면 무관한 스페이스(예: 실제
+    KAFKA/FLINK 프로젝트 문서)에서 그럴듯한 답을 찾아버려 범위밖 질문에도 답하는 문제가 생긴다.
     """
+    scoped_cql = f'space = "{CONFLUENCE_SPACE_KEY}" AND ({cql})'
     response = requests.get(
         f"{CONFLUENCE_BASE_URL}/rest/api/content/search",
-        params={"cql": cql, "limit": 5},
+        params={"cql": scoped_cql, "limit": 5},
         headers=_headers(),
         timeout=15,
     )

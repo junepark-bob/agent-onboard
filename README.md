@@ -1,58 +1,93 @@
-# 컨플루언스 온보딩 Agent
+# 미니 PJT: 컨플루언스 온보딩 Agent
 
-SI/SM 프로젝트에 새로 투입된 신입 멤버가 컨플루언스에서 온보딩 정보를 찾지 못해 겪는 비효율을 해결하는 AI 에이전트입니다. 사전에 인덱싱한 문서를 RAG로 검색하고, 부족하면 MCP로 컨플루언스를 실시간 검색해 보완하며, 근거가 없으면 "모른다"고 답해 환각을 방지합니다.
+## 무엇을 푸나요
+SI/SM 프로젝트에 새로 투입된 신입 멤버가 컨플루언스에서 온보딩 정보를 찾지 못해 겪는 비효율을, RAG + MCP 하이브리드 검색으로 답해드리고 근거가 없을 때는 정직하게 "모른다"고 답하는 에이전트로 풀어보려 합니다.
 
-> 기획 배경과 요구사항은 [documents/SERVICE.md](documents/SERVICE.md), 한 줄 소개는 [documents/INTRODUCTION.md](documents/INTRODUCTION.md), 설계 고민은 [documents/ISSUES.md](documents/ISSUES.md)를 참고하세요.
+## 활용한 패턴 (Day 1~7)
+- **Day 1 — LCEL chain (Pydantic 구조화 출력)**: `src/evaluation/llm_judge.py`의 `JudgeResult(BaseModel)`을 `with_structured_output(JudgeResult)`로 강제 파싱하도록 했고, `src/server/server.py`의 요청/응답도 `QueryRequest`/`Context`/`TraceStep`/`QueryResponse` pydantic 모델로 스키마를 검증하도록 했습니다.
+- **Day 2 — RAG (쿼리 확장)**: `src/agent/retriever.py`의 `rag_search()`가 원본 질의어와 그 번역본(한국어↔영어)을 **둘 다** 검색해서 최상위 유사도가 더 높은 쪽을 채택합니다. 문서는 영어인데 질문은 한국어라 생기던 교차언어 검색 실패(실측 top1 유사도 ~0.13)를 이 방식으로 해결했습니다. 다만 고전적인 cross-encoder 리랭킹까지는 적용하지 못했습니다.
+- **Day 3 — ReAct (도구 자율 선택)**: `src/agent/agent.py`의 `create_agent`가 `rag_search`/`get_page`/`search_confluence` 중 언제 무엇을 부를지 스스로 판단하도록 했습니다. 고정된 그래프 분기 대신 시스템 프롬프트로 순서만 안내합니다.
+- **Day 4 — 도구 다중 결합 + MCP 서버 연동**: 한 질문에 로컬 검색(rag_search) → 원문 재조회(get_page) → 실시간 검색(search_confluence)까지 필요에 따라 자율적으로 이어서 호출합니다. `src/agent/tools.py`는 FastMCP 기반 stdio MCP 서버로 `get_page`/`search_confluence`를 노출하고, `langchain_mcp_adapters.MultiServerMCPClient`로 에이전트와 연결했습니다.
+- **Day 5 — 가드레일/HITL/미들웨어**: 이 부분은 그대로 적용하지는 못했습니다. 대신 비슷한 문제(안정성)를 Bedrock 쓰로틀링에 대한 **모델 폴백 재시도**(`src/agent/models.py`의 `MODEL_CANDIDATES`)로 자체 구현해봤습니다 — 완전히 같은 패턴은 아니지만 "실패하면 대체 경로로 재시도한다"는 목적은 같습니다.
+- **Day 6 — Multi-Agent Supervisor**: 적용하지 않았습니다. 도구가 2~3개뿐이라 단일 ReAct 에이전트로도 충분하다고 판단해서 의도적으로 채택하지 않았습니다 (근거는 `data/documents/ISSUES.md` 3절에 정리해뒀습니다).
+- **Day 7 — Observability/Trace, 평가(LLM-as-Judge)**: `POST /query` 응답의 `trace` 필드에 각 단계(`retrieve`/`fetch_page`/`live_search`/`model_select`)의 입출력을 기록하도록 했습니다 — LangSmith나 LangFuse는 아니고 저희가 직접 구현한 방식입니다. 평가는 `src/evaluation/llm_judge.py`로 LLM-as-Judge를 구현했습니다. **RAGAS는 아직 구현하지 못했습니다** (아래 절에서 자세히 말씀드리겠습니다).
 
-## 특징
-
-- **RAG + MCP 하이브리드 검색**: 사전 크롤링한 문서를 벡터 검색(RAG)하고, 결과가 부족하면 컨플루언스를 실시간 검색(MCP)하는 폴백을 에이전트가 스스로 판단합니다.
-- **출처 인용 + 정직한 "모름"**: 답변에는 항상 출처 링크가 따라붙고, 근거가 없으면 지어내지 않고 모른다고 답합니다.
-- **한국어 질문 / 영어 문서 대응**: 문서는 영어 원문이지만 사용자는 한국어로 질문합니다. `rag_search`가 질의어와 그 번역본(한국어<->영어)을 모두 검색해 유사도가 더 높은 쪽을 자동으로 채택합니다 (자세한 내용은 [비고](#비고) 참고).
-- **이미지(다이어그램) 크롤링 지원**: 페이지에 첨부 이미지가 있으면 축소한 뒤 저비용 비전 모델(Haiku)에 한 번만 보내 사진은 설명, 다이어그램은 Mermaid, 문서/표 캡처는 텍스트로 바꿔 본문에 끼워 넣습니다.
-- **실무 컨플루언스로 교체 가능한 구조**: `CONFLUENCE_BASE_URL`/`CONFLUENCE_AUTH_TOKEN`을 `.env`로 분리해 대상 컨플루언스를 코드 수정 없이 교체할 수 있습니다.
-- **LLM-judge 자동 평가**: `evaluation/`의 테스트 질문셋을 돌려 출처 정확성 중심으로 자동 채점하고 리포트를 남깁니다.
+**필수 항목(1, 3, 11, 12) 충족 현황을 솔직히 말씀드리면**: 1(구조화 출력)은 충족했습니다. 3(RAG)은 쿼리 확장까지만 구현했고 리랭킹은 못 했습니다. 11(Observability)은 자체 trace로 대체했고 LangSmith/LangFuse는 쓰지 않았습니다. 12(평가)는 LLM-as-Judge만 구현했고 RAGAS는 아직입니다 — 아래 "RAGAS 평가 결과" 절에 그대로 밝혀두었습니다.
 
 ## 아키텍처
-
 ```
-사용자(static/chat.html) → FastAPI(POST /query, server.py) → src/agent.py (create_agent, ReAct)
-                                                                  ├─ src/retriever.py : RAG 검색 (chroma_db)
-                                                                  └─ src/tools.py     : Confluence MCP 서버
-                                                                                         (실시간 페이지 조회 / CQL 검색)
+사용자(static/chat.html) → FastAPI(POST /query, src/server/server.py) → src/agent/agent.py (create_agent, ReAct)
+                                                                             ├─ src/agent/retriever.py : RAG 검색 (chroma_db)
+                                                                             └─ src/agent/tools.py     : Confluence MCP 서버
+                                                                                                          (실시간 페이지 조회 / CQL 검색)
 ```
+모든 파이썬 코드는 `src/` 아래에 모아뒀습니다(`src/agent/`, `src/crawler/`, `src/server/`, `src/evaluation/` 서브패키지). `src/agent/`는 외부에서 `from ..agent import run_query, MODEL_CANDIDATES, REGION` 형태로만 접근합니다 — 내부 파일 구성은 `src/agent/__init__.py`가 감춥니다. `data/`, `evaluation/`, `static/`에는 코드가 아닌 산출물(문서·데이터·UI)만 둡니다.
 
-## 프로젝트 구조
+## 실행 방법
+모든 명령은 `mini-pjt/` 디렉터리에서 실행해주세요(서브패키지 상대 임포트를 쓰고 있어서 `-m` 모듈 실행이 필요합니다). 사전 준비나 환경 변수 등 자세한 내용은 [아래 부록](#부록-설치--환경-변수)을 참고해주세요.
 
-```
-crawl_confluence.py     컨플루언스 문서 수집 (data/urls.txt → data/raw/)
-server.py                FastAPI 서버, POST /query, 채팅 UI 서빙
-static/chat.html          채팅 UI (단일 HTML)
-src/
-├── agent.py               메인 에이전트 그래프 (create_agent 기반 ReAct)
-├── tools.py                도메인 도구 (Confluence MCP 서버)
-├── retriever.py            RAG 파이프라인 (임베딩 + 벡터 검색)
-└── models.py                Bedrock 모델 폴백 후보 목록 (agent/retriever 공용)
-data/
-├── urls.txt                크롤링할 페이지 URL 목록 (수동 선정)
-└── raw/                     크롤링된 원문 (JSON, git에는 포함되지 않음)
-chroma_db/                 벡터 인덱스 (생성물, git에는 포함되지 않음)
-evaluation/
-├── test_queries.csv        평가용 질문 11건 (정상 8 + 범위밖 3)
-├── llm_judge.py             LLM-judge 채점 로직
-├── run_eval.py               평가 실행 스크립트
-└── eval_report.csv           평가 결과 (실행 후 생성)
-documents/                 기획 문서 (SERVICE.md, INTRODUCTION.md, IDEAS.md, ISSUES.md 등)
+```bash
+# 1. 컨플루언스 문서 수집 (data/urls.txt → data/raw/)
+python -m src.crawler.crawl_confluence
+
+# 2. RAG 인덱스 빌드 (data/raw/ → chroma_db/)
+python -m src.agent.retriever
+
+# 3. 서버 실행
+uvicorn src.server.server:app --reload
+# 브라우저에서 http://127.0.0.1:8000 에 접속하시거나 static/chat.html을 직접 열어도 채팅 UI를 쓰실 수 있습니다
+
+# 4. 평가 실행 (evaluation/test_queries.csv 20건 → LLM-judge 채점 → evaluation/round1_report.md)
+python -m src.evaluation.run_eval
 ```
 
-## 요구사항
+## RAGAS 평가 결과
+**아직 실행하지 못했습니다.** `ragas` 라이브러리를 도입하지 않아서 `context_recall`/`context_precision`/`faithfulness`/`answer_relevancy` 수치가 없습니다. 지금은 `src/evaluation/llm_judge.py`의 LLM-as-Judge(5점 만점, expected_traits/forbidden 기반 rubric)로만 채점하고 있습니다. RAGAS 도입이 필요하시면 말씀해주세요.
 
-- Python 3.11 이상 (개발/검증은 3.14 기준)
-- AWS Bedrock 접근 권한 (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`, `amazon.titan-embed-text-v2:0` 모델 사용 승인 필요, 리전 `us-east-1`)
+## 인-아웃 세트 통과율 (자체 평가)
+- **1차** (`evaluation/round1_report.md`): **18/20 통과 (90%)**였습니다. positive 7/8, negative 4/4, edge 4/5, guardrail 3/3. 실패한 2건은 #7(Jira 문서 질문, 3점 — 사소한 누락)과 #15(모호한 질문 "설정 파일이 뭐예요?"를 되묻지 않고 특정 파일로 단정해버림, 1점)였습니다.
+- **2차**: 위 2건의 원인을 고쳐서 재실행했습니다 — 결과는 `evaluation/round2_report.md`를 참고해주세요(아래 트라이앤에러 회고에도 정리해뒀습니다).
+- **개선폭**: 2차 결과가 나오는 대로 이 자리에 갱신하겠습니다.
 
-## 설치
+## 트라이앤에러 회고
+- **시도했지만 실패했던 접근들**
+  - 한국어 질의를 그대로 임베딩해서 검색했더니 정답 문서 top1 유사도가 ~0.13까지 떨어졌습니다(문서가 전부 영어라 교차언어 유사도가 낮아짐). → 원본+번역본을 함께 검색해서 최고점을 채택하는 방식으로 바꿨습니다.
+  - 사용자 질문이 한국어인지 여부를 클라이언트(`chat.html`)가 정규식으로 판단해서 `is_korean` 플래그로 서버에 넘기게 했었는데, "HTML이 언어를 몰라도 되게 해달라"는 요청을 받고 `rag_search` 내부에서 자동 처리하는 방식으로 다시 설계하고 플래그는 걷어냈습니다.
+  - 시스템 프롬프트에 "답변은 한국어로 쓰라"를 한 문장만 넣어봤는데, 영어로 질문하면 답변도 영어로 나오는 문제가 재현됐습니다(모델이 입력 언어를 따라가려는 경향을 문장 하나로는 못 눌렀습니다). → 프롬프트 맨 앞과 끝에 "절대 영어로 답하지 마라"를 반복해서 배치해 해결했습니다.
+  - 컨플루언스 페이지 제목에 공백이 있는 URL(`.../Chukwa+Processes+and+Data+Flow`)을 파싱하지 못하는 문제가 있었습니다 — `urllib.parse.unquote`가 `+`를 공백으로 안 바꿔주는 게 원인이었습니다. `src/crawler/crawl_confluence.py`와 `src/agent/tools.py` 두 곳에서 순차적으로 발견해 `unquote_plus`로 고쳤습니다.
+  - negative 평가 케이스("Kafka 클러스터에 Topic 만드는 법")에서 에이전트가 `AdminClient` 코드까지 곁들여 상세하게 답해버렸습니다. 처음엔 사전 지식(pretrained knowledge)으로 인한 환각이라고 의심했는데, trace를 뜯어보니 `search_confluence`가 스페이스 제한 없이 cwiki.apache.org 전체를 검색해서 **실제 KAFKA 프로젝트 스페이스의 진짜 문서**를 찾아 답한 것이었습니다. 프롬프트 문제가 아니라 도구가 스스로 범위를 제한하지 않은 게 진짜 원인이라, `CONFLUENCE_SPACE_KEY`로 CQL을 서버 쪽에서 강제로 감싸도록 고쳤습니다(`data/documents/ISSUES.md` 4절에 자세히 적어뒀습니다).
+- **최종적으로 채택한 접근**: RAG(청크 임베딩 + 이중언어 검색)와 MCP(실시간 페이지 조회·검색)를 하이브리드로 묶어 단일 ReAct 에이전트(`create_agent`)로 구성했고, Bedrock 쓰로틀링에는 모델 폴백 체인으로, 첨부 이미지는 저비용 비전 모델 1회 호출로 대응했습니다.
+- **아직 남아 있는 한계**
+  - RAGAS를 아직 구현하지 못해서 수치가 없습니다.
+  - 1차 라운드(20건)에서 실패했던 2건(#7 Jira 문서 질문 3점, #15 모호한 질문을 단정해버려서 1점)은 원인을 찾아 고쳤고, 2차에서 다시 검증했습니다.
+  - 가드레일(PII/프롬프트 인젝션 방어)을 위한 전용 미들웨어는 없지만, guardrail 카테고리 3건은 시스템 프롬프트만으로 1차 라운드에서 전부(3/3) 통과했습니다. Multi-Agent Supervisor, Plan-Execute, 장기 메모리는 스코프 아웃으로 결정하고 적용하지 않았습니다.
+  - 이미지 분류는 "사진/도표" 유형만 실측으로 확인했고, "문서 캡처"나 "도표가 있는 문서" 유형은 대상 스페이스(HADOOP2)에 아예 없어서 검증하지 못했습니다 (`data/documents/ISSUES.md` 2절).
+  - **응답 속도가 너무 느립니다 (해결 예정)**: `agent.ainvoke()`에 LangChain 콜백으로 단계별 소요 시간을 계측해보니(`src/agent/agent.py`의 `PerformanceTracker`), 실제 질의 하나에 33초가 걸렸습니다 — LLM 호출 19.3초(58%, ReAct 루프가 순차적으로 Bedrock을 2회 이상 호출하는 구조적 원인), `rag_search` 5.3초(16%, 번역 1회 + 원문/번역본 이중 벡터 검색), MCP 서버 기동 2.2초(7%, 요청마다 stdio 서브프로세스를 새로 띄움), 그리고 계측되지 않은 6.3초(19%)로 나뉩니다. 마지막 미계측 구간을 코드로 추적해보니 `agent.py`가 `contexts`/`trace`를 구조화하려고 이미 실행된 `rag_search`를 답변 생성 후 **한 번 더 그대로 재실행**하고 있었습니다 — 즉 요청당 `rag_search`가 실질적으로 두 번 돌면서 시간과 Bedrock 호출 비용이 그만큼 더 들고 있었습니다. 남은 1.5일 동안 이 중복 실행 제거(ainvoke 실행 중 나온 실제 tool 결과 재사용), MCP 서브프로세스 재사용, 필요시 모델 교체/스트리밍까지 순서대로 고치면서 이 문단을 갱신할 계획입니다.
 
-이 저장소(`sds-ax-practice`) 루트에 공용 가상환경이 있습니다. 루트에서 가상환경을 만들고, 루트 + `mini-pjt` 두 requirements를 모두 설치하세요.
+## 핵심 코드 위치
+- `src/agent/agent.py:66` — `run_query()`, API의 메인 진입점입니다 (모델 폴백 재시도 + trace/contexts 조립)
+- `src/agent/agent.py:60` — `build_agent()`, rag_search와 MCP 도구로 create_agent 인스턴스를 만듭니다
+- `src/agent/agent.py:19` — `SYSTEM_PROMPT`
+- `src/agent/tools.py:43` — `get_page()`, MCP 도구입니다 (페이지 실시간 조회)
+- `src/agent/tools.py:75` — `search_confluence()`, MCP 도구입니다 (CQL 실시간 검색, `CONFLUENCE_SPACE_KEY`로 스페이스를 강제 제한합니다)
+- `src/agent/retriever.py:110` — `rag_search()`, 쿼리 확장 + 이중 검색 + 최고점 채택을 담당합니다
+- `src/agent/retriever.py:74` — `_translate()`, 한국어↔영어 번역을 담당합니다(모델 폴백 포함)
+- `src/agent/models.py:7` — `MODEL_CANDIDATES`, Bedrock 모델 폴백 후보 목록입니다
+- `src/crawler/crawl_confluence.py:176` — `main()`, 크롤링 진입점입니다
+- `src/server/server.py:67` — `POST /query` 핸들러입니다
+- `src/evaluation/llm_judge.py:58` — `judge_answer()`, LLM-as-Judge 채점을 담당합니다
+- `src/evaluation/run_eval.py:142` — `run_round()`, 평가셋 전체 실행과 마크다운 리포트 저장을 담당합니다
+
+---
+
+## 부록: 설치 & 환경 변수
+
+### 요구사항
+- Python 3.11 이상이면 됩니다 (개발/검증은 3.14 기준으로 진행했습니다)
+- AWS Bedrock 접근 권한이 필요합니다 — `src/agent/models.py`의 `MODEL_CANDIDATES`(Claude Sonnet/Haiku, us./global. 추론 프로필, Amazon Nova)에 대한 모델 액세스, 임베딩은 `amazon.titan-embed-text-v2:0`, 리전은 `us-east-1`입니다
+
+### 설치
+이 저장소 루트에 공용 가상환경이 준비되어 있습니다. 루트에서 가상환경을 만드시고, 루트 + `mini-pjt` 두 requirements를 모두 설치해주세요.
 
 ```bash
 # 저장소 루트에서
@@ -62,84 +97,37 @@ pip install -r requirements.txt
 pip install -r mini-pjt/requirements.txt
 ```
 
-## 환경 변수
+### 환경 변수
+저장소 루트의 `.env`를 그대로 사용합니다 (`load_dotenv()`가 상위 폴더까지 자동으로 찾아줍니다).
 
-저장소 루트의 `.env`를 그대로 사용합니다 (`load_dotenv()`가 상위 폴더까지 자동으로 탐색합니다). 루트 `.env`에 아래 항목이 필요합니다.
-
-| 변수 | 필수 | 설명 |
+| 변수 | 필수 여부 | 설명 |
 |---|---|---|
-| `AWS_ACCESS_KEY_ID` | 필수 | Bedrock 호출용 AWS 자격 증명 |
-| `AWS_SECRET_ACCESS_KEY` | 필수 | Bedrock 호출용 AWS 자격 증명 |
-| `AWS_DEFAULT_REGION` | 필수 | `us-east-1` |
-| `CONFLUENCE_BASE_URL` | 선택 | 기본값 `https://cwiki.apache.org/confluence` (ASF 공개 인스턴스). 사내 컨플루언스로 바꾸려면 이 값만 교체 |
-| `CONFLUENCE_AUTH_TOKEN` | 선택 | ASF 공개 스페이스는 비워둬도 됨. 인증이 필요한 인스턴스면 Bearer 토큰 지정 |
+| `AWS_ACCESS_KEY_ID` | 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
+| `AWS_SECRET_ACCESS_KEY` | 필수 | Bedrock 호출용 AWS 자격 증명입니다 |
+| `AWS_DEFAULT_REGION` | 필수 | `us-east-1`로 설정해주세요 |
+| `CONFLUENCE_BASE_URL` | 선택 | 기본값은 `https://cwiki.apache.org/confluence`입니다. 사내 컨플루언스로 바꾸실 때는 이 값만 교체하시면 됩니다 |
+| `CONFLUENCE_AUTH_TOKEN` | 선택 | ASF 공개 스페이스는 비워두셔도 됩니다. 인증이 필요한 인스턴스라면 Bearer 토큰을 지정해주세요 |
 
-## 사용법
-
-모든 명령은 `mini-pjt/` 디렉터리에서 실행합니다.
-
-### 1. 컨플루언스 문서 크롤링
-
-`data/urls.txt`에 적힌 URL들을 수집해 `data/raw/*.json`으로 저장합니다.
-
-```bash
-python crawl_confluence.py
+### API 계약
 ```
+POST /query
+Content-Type: application/json
+Body: {"question": "사용자 질의"}
 
-### 2. RAG 인덱스 빌드
-
-`data/raw/`의 문서를 임베딩해 `chroma_db/`를 생성합니다.
-
-```bash
-python -m src.retriever
-```
-
-### 3. 서버 실행
-
-```bash
-uvicorn server:app --reload
-```
-
-API는 이 서버가 떠 있어야 동작합니다. 채팅 UI는 두 가지 방법 중 편한 쪽으로 엽니다.
-
-- 브라우저에서 `http://127.0.0.1:8000` 접속 (서버가 `static/chat.html`을 서빙)
-- 또는 `static/chat.html` 파일을 탐색기에서 더블클릭해 `file://`로 직접 열기 (서버는 여전히 백그라운드에서 실행 중이어야 함)
-
-두 방법 모두 `static/chat.html`이 절대 URL(`http://127.0.0.1:8000/query`)로 API를 호출하고, `server.py`에 CORS를 열어뒀기 때문에 동일하게 동작합니다. 서버 포트를 8000이 아닌 다른 값으로 바꾸면 `static/chat.html` 상단의 `API_BASE` 값도 맞춰서 바꿔야 합니다.
-
-### 4. API 직접 호출
-
-```bash
-curl -X POST http://127.0.0.1:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "패치를 커밋할 때 커밋 메시지에는 어떤 정보를 포함해야 하나요?"}'
-```
-
-응답 형식:
-
-```json
+Response:
 {
-  "answer": "한국어 요약 답변 (출처 인용 포함)",
-  "contexts": [{"title": "...", "url": "...", "content": "..."}],
-  "trace": [{"tool": "rag_search", "args": {"query": "...", "k": 5}, "hits": [...]}]
+  "answer": "근거 기반 응답",
+  "contexts": [{"doc_id": "...", "text": "...", "title": "..."}, ...],
+  "trace": [{"step": "retrieve", "input": "...", "output": "..."}, ...]
 }
 ```
+- `contexts[].doc_id`는 컨플루언스 페이지의 canonical URL을 사용합니다(저희 시스템에서는 "문서" 단위가 페이지 하나라서 URL을 안정적인 식별자로 쓰고 있습니다). `title`은 계약에는 없는 추가 필드인데, 채팅 UI가 출처 링크의 라벨로 활용합니다.
+- `trace[].step`은 `retrieve`/`fetch_page`/`live_search`/`model_select` 중 하나입니다.
 
-### 5. 평가 실행
+### 비고
+- **`SIMILARITY_THRESHOLD`**(`src/agent/retriever.py`): 0.3으로 설정해뒀습니다. 실측한 정상 질문(0.44~0.83)과 범위밖 질문(0.07~0.22) 점수 사이의 값이며, 크롤링 대상 문서가 바뀌면 재조정이 필요합니다.
+- **AWS Bedrock 일일 토큰 한도**: 반복 실행하면 걸릴 수 있습니다(`ThrottlingException: Too many tokens per day`). `src/evaluation/run_eval.py`는 케이스 하나가 실패해도 나머지를 계속 진행하고 실패 사유를 리포트에 남기도록 만들어뒀습니다.
+- **이미지 처리**: `src/crawler/crawl_confluence.py`가 첨부 이미지(`ac:image`)를 찾으면 긴 변을 768px로 축소한 뒤 저비용 모델(`claude-haiku`)에 분류와 추출을 한 번만 호출합니다. 설계 배경은 `data/documents/ISSUES.md` 2절을 참고해주세요.
+- **`search_confluence` 스페이스 제한**: `src/agent/tools.py`가 실시간 CQL 검색을 항상 `CONFLUENCE_SPACE_KEY`(기본값 `HADOOP2`)로 감싸도록 해뒀습니다. 이렇게 하지 않으면 cwiki.apache.org 전체(수백 개 ASF 프로젝트)를 검색해버려서, 범위밖 질문에도 실제 문서를 찾아 답해버리는 문제가 있었습니다(`data/documents/ISSUES.md` 4절).
 
-`evaluation/test_queries.csv` 11건을 에이전트로 실행하고 LLM-judge로 채점해 `evaluation/eval_report.csv`를 생성합니다.
-
-```bash
-python evaluation/run_eval.py
-```
-
-성공 기준(자세한 내용은 `documents/SERVICE.md` 11절): 질문당 5점 만점 중 평균 4점 이상이면 통과, 11건 중 8건(약 70%) 이상 통과하면 전체 성공.
-
-## 비고
-
-- **양방향 번역 후 최고점 채택**: 문서는 영어 원문인데 사용자는 한국어로 질문합니다. 한국어 질의를 그대로 임베딩하면 Titan Embed v2의 교차언어 유사도가 크게 떨어져(실측 top1 ~0.13) 정답 문서를 못 찾습니다. 그래서 `src/retriever.py`의 `rag_search()`가 호출될 때마다 내부적으로 (1) 원본 질의어 번역(한국어<->영어), (2) 원본과 번역본 둘 다로 벡터 검색, (3) 최상위 유사도가 더 높은 쪽 결과 채택을 수행합니다. 호출자(에이전트/`src/agent.py`)는 질문 언어를 신경 쓸 필요가 없습니다.
-- **`SIMILARITY_THRESHOLD`(`src/retriever.py`)**: 0.3으로 설정되어 있으며, 실측한 정상 질문(0.44~0.83)과 범위밖 질문(0.07~0.22) 점수 사이의 값입니다. 크롤링 대상 문서가 바뀌면 재조정이 필요합니다.
-- **1차(MVP) 범위**: RAG 검색 + 출처 인용 + "모름" 판단 + trace 기록. 실시간 CQL 검색(MCP 폴백)과 "읽기 순서 가이드"는 후순위 기능입니다.
-- **AWS Bedrock 일일 토큰 한도**: 평가를 반복 실행하면 계정의 일일 토큰 한도에 걸릴 수 있습니다(`ThrottlingException: Too many tokens per day`). `run_eval.py`는 문항 하나가 실패해도 나머지를 계속 진행하고 실패 사유를 리포트에 남깁니다.
-- **모델 폴백**: Bedrock 쓰로틀링이 나면 `src/models.py`의 `MODEL_CANDIDATES` 순서대로 다음 모델(같은 모델의 `global.` 추론 프로필 포함)로 자동 전환합니다. `src/agent.py`, `evaluation/llm_judge.py`, `crawl_confluence.py`(비전 모델)가 모두 이 패턴을 씁니다.
-- **이미지 처리와 토큰 비용**: `crawl_confluence.py`는 페이지에서 첨부 이미지(`ac:image`)를 찾으면 다운로드 후 긴 변 768px로 축소한 뒤, 저비용 모델(`claude-haiku`)에 "사진/다이어그램/문서 캡처 중 하나로 분류해서 바로 그 형식으로 답하라"는 프롬프트를 **한 번만** 보내 사진은 문장 설명, 다이어그램은 Mermaid, 문서 캡처는 텍스트 그대로 옮기게 합니다. 리사이즈(토큰의 대부분을 차지하는 이미지 크기 축소) + 모델 1회 호출 + 저비용 모델 우선이 토큰을 아끼는 핵심 장치입니다. 설계 배경은 [documents/ISSUES.md](documents/ISSUES.md) 2절 참고.
+> 기획 배경/요구사항은 [data/documents/SERVICE.md](data/documents/SERVICE.md), 한 줄 소개는 [data/documents/INTRODUCTION.md](data/documents/INTRODUCTION.md), 설계 고민은 [data/documents/ISSUES.md](data/documents/ISSUES.md)를 참고해주세요.

@@ -6,27 +6,33 @@
 python-dotenv==1.2.3
 boto3==1.43.91
 
-# 에이전트 (src/agent.py) - Bedrock 모델 + LangGraph 기반 create_agent
+# 에이전트 (src/agent/agent.py) - Bedrock 모델 + LangGraph 기반 create_agent
 langchain==1.4.0
 langchain-aws==1.7.5
 langgraph==1.2.11
 
-# RAG (src/retriever.py) - 임베딩 + 벡터 검색
+# RAG (src/agent/retriever.py) - 임베딩 + 벡터 검색
 langchain-text-splitters==1.1.2
 langchain-chroma==1.1.0
 chromadb==1.5.9
 
-# MCP (src/tools.py, src/agent.py) - Confluence 도구 서버 및 연결
+# MCP (src/agent/tools.py, src/agent/agent.py) - Confluence 도구 서버 및 연결
 mcp==1.30.0
 fastmcp==2.13.0
 langchain-mcp-adapters==0.3.2
 
-# 크롤링 (crawl_confluence.py) - Confluence REST API 호출 + HTML -> 마크다운 변환 + 이미지 설명 생성
+# 크롤링 (src/crawler/crawl_confluence.py) - Confluence REST API 호출 + HTML -> 마크다운 변환 + 이미지 설명 생성
 requests==2.34.2
 markdownify==1.2.3
 Pillow==12.3.0
 
-# 서버 (server.py) - FastAPI
+# 서버 (src/server/server.py) - FastAPI
 fastapi==0.141.1
 uvicorn==0.52.4
 pydantic==2.13.5
+
+# 평가 (src/evaluation/) - RAGAS 지표 계산
+# 0.4.x는 scikit-network(빌드 도구 필요)에 막히고, 0.2.x/0.3.x는 langchain_community.chat_models.vertexai
+# 를 무조건 import하는 버그가 있어(최신 langchain-community엔 없음), 0.3.0을 쓰되 ragas_eval.py에서
+# 그 서브모듈을 더미로 스텁 처리한다.
+ragas==0.3.0

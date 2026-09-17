@@ -104,8 +104,8 @@
       const uniqueSources = [];
       const seen = new Set();
       for (const ctx of contexts || []) {
-        if (ctx.url && !seen.has(ctx.url)) {
-          seen.add(ctx.url);
+        if (ctx.doc_id && !seen.has(ctx.doc_id)) {
+          seen.add(ctx.doc_id);
           uniqueSources.push(ctx);
         }
       }
@@ -115,7 +115,7 @@
         sources.innerHTML =
           "출처<br>" +
           uniqueSources
-            .map((s) => `<a href="${s.url}" target="_blank" rel="noopener">${s.title || s.url}</a>`)
+            .map((s) => `<a href="${s.doc_id}" target="_blank" rel="noopener">${s.title || s.doc_id}</a>`)
             .join("");
         bubble.appendChild(sources);
       }

@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 성능 계측 로그 (요청마다 append, 실행 환경별로 달라짐)
+performance_trace.jsonl

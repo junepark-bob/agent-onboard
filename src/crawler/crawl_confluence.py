@@ -19,14 +19,16 @@ from langchain_aws import ChatBedrockConverse
 from markdownify import markdownify
 from PIL import Image
 
-from src.models import REGION
+from ..agent import REGION
 
 load_dotenv()
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # src/crawler -> src -> mini-pjt 루트
+
 CONFLUENCE_BASE_URL = os.environ.get("CONFLUENCE_BASE_URL", "https://cwiki.apache.org/confluence")
 CONFLUENCE_AUTH_TOKEN = os.environ.get("CONFLUENCE_AUTH_TOKEN")  # ASF 공개 스페이스는 비워둬도 됨
-URL_LIST_PATH = Path(__file__).parent / "data" / "urls.txt"
-RAW_DIR = Path(__file__).parent / "data" / "raw"
+URL_LIST_PATH = PROJECT_ROOT / "data" / "urls.txt"
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
 
 DISPLAY_URL_PATTERN = re.compile(r"/display/([^/]+)/([^/]+)/?$")
 IMAGE_TAG_PATTERN = re.compile(r'<ac:image[^>]*>\s*<ri:attachment ri:filename="([^"]+)"\s*/>\s*</ac:image>')
