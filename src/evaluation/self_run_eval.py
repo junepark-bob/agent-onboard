@@ -139,7 +139,8 @@ def save_markdown_report(results: list[dict], path: Path, round_name: str) -> No
     for r in results:
         mark = "PASS" if r["passed"] else "FAIL"
         question = r["question"].replace("|", "\\|").replace("\n", " ")[:40]
-        cited = r["cited_doc_ids"].replace("|", "\\|")[:60] or "없음"
+        # 인용 출처는 이 평가의 핵심 판정 근거라 자르지 않고 전체 URL을 그대로 보여준다.
+        cited = r["cited_doc_ids"].replace("|", "\\|") or "없음"
         reasoning = r["reasoning"].replace("|", "\\|").replace("\n", " ")[:80]
         ragas = r["ragas"]
         ragas_str = "/".join(f"{ragas[k]:.2f}" if ragas.get(k) is not None else "-" for k in ragas_keys)

@@ -38,6 +38,7 @@ data/                 사용한 문서와 데이터 (urls.txt, raw/, chroma_db)
 evaluation/           평가용 CSV와 리포트만 둔다(코드는 없음)
 ├── test_queries.csv / round1_report.md / round2_report.md         운영 측이 준 스키마
 └── test_self_queries.csv / self_test_round1_report.md / self_test_round2_report.md   자체 출처-정확성 스키마
+architectures/        아키텍처 결정 기록(ADR). 번호가 매겨진 결정 하나당 파일 하나, README.md가 인덱스
 ```
 `src/agent/`는 외부에서 `from ..agent import run_query, MODEL_CANDIDATES, REGION` 형태로만 접근한다 — 내부에 어떤 파일이 몇 개 있는지는 `src/agent/__init__.py`가 감춘다.
 

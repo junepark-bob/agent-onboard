@@ -10,9 +10,9 @@ SI/SM 프로젝트에 새로 투입된 신입 멤버가 컨플루언스에서 �
 - **Day 4 — 도구 다중 결합 + MCP 서버 연동**: 한 질문에 로컬 검색(rag_search) → 원문 재조회(get_page) → 실시간 검색(search_confluence)까지 필요에 따라 자율적으로 이어서 호출합니다. `src/agent/tools.py`는 FastMCP 기반 stdio MCP 서버로 `get_page`/`search_confluence`를 노출하고, `langchain_mcp_adapters.MultiServerMCPClient`로 에이전트와 연결했습니다.
 - **Day 5 — 가드레일/HITL/미들웨어**: 이 부분은 그대로 적용하지는 못했습니다. 대신 비슷한 문제(안정성)를 Bedrock 쓰로틀링에 대한 **모델 폴백 재시도**(`src/agent/models.py`의 `MODEL_CANDIDATES`)로 자체 구현해봤습니다 — 완전히 같은 패턴은 아니지만 "실패하면 대체 경로로 재시도한다"는 목적은 같습니다.
 - **Day 6 — Multi-Agent Supervisor**: 적용하지 않았습니다. 도구가 2~3개뿐이라 단일 ReAct 에이전트로도 충분하다고 판단해서 의도적으로 채택하지 않았습니다 (근거는 `data/documents/ISSUES.md` 3절에 정리해뒀습니다).
-- **Day 7 — Observability/Trace, 평가(LLM-as-Judge)**: `POST /query` 응답의 `trace` 필드에 각 단계(`retrieve`/`fetch_page`/`live_search`/`model_select`)의 입출력을 기록하도록 했습니다 — LangSmith나 LangFuse는 아니고 저희가 직접 구현한 방식입니다. 평가는 `src/evaluation/llm_judge.py`로 LLM-as-Judge를 구현했습니다. **RAGAS는 아직 구현하지 못했습니다** (아래 절에서 자세히 말씀드리겠습니다).
+- **Day 7 — Observability/Trace, 평가(LLM-as-Judge)**: `POST /query` 응답의 `trace` 필드에 각 단계(`retrieve`/`fetch_page`/`live_search`/`model_select`)의 입출력과 실행 시간(`duration_ms`)을 기록하도록 했습니다 — LangSmith나 LangFuse는 아니고 저희가 직접 구현한 방식입니다. 평가는 두 트랙으로 나눠서 구현했습니다: 운영 측 스키마(`expected_traits`/`forbidden` 기반) 채점은 `src/evaluation/llm_judge.py`, 출처 정확성 중심 자체 채점은 `src/evaluation/self_llm_judge.py`이며, 여기에 **RAGAS**(faithfulness/answer_relevancy/context_precision/context_recall, `src/evaluation/ragas_eval.py`)를 참고 지표로 함께 계산합니다 (아래 "RAGAS 평가 결과" 절 참고).
 
-**필수 항목(1, 3, 11, 12) 충족 현황을 솔직히 말씀드리면**: 1(구조화 출력)은 충족했습니다. 3(RAG)은 쿼리 확장까지만 구현했고 리랭킹은 못 했습니다. 11(Observability)은 자체 trace로 대체했고 LangSmith/LangFuse는 쓰지 않았습니다. 12(평가)는 LLM-as-Judge만 구현했고 RAGAS는 아직입니다 — 아래 "RAGAS 평가 결과" 절에 그대로 밝혀두었습니다.
+**필수 항목(1, 3, 11, 12) 충족 현황을 솔직히 말씀드리면**: 1(구조화 출력)은 충족했습니다. 3(RAG)은 쿼리 확장까지만 구현했고 리랭킹은 안 했습니다. 11(Observability)은 자체 trace(+실행 시간 계측)로 대체했고 LangSmith/LangFuse는 쓰지 않았습니다. 12(평가)는 LLM-as-Judge 두 트랙(운영 스키마/자체 출처-정확성 스키마)과 RAGAS를 함께 구현했습니다.
 
 ## 아키텍처
 ```
@@ -37,17 +37,30 @@ python -m src.agent.retriever
 uvicorn src.server.server:app --reload
 # 브라우저에서 http://127.0.0.1:8000 에 접속하시거나 static/chat.html을 직접 열어도 채팅 UI를 쓰실 수 있습니다
 
-# 4. 평가 실행 (evaluation/test_queries.csv 20건 → LLM-judge 채점 → evaluation/round1_report.md)
+# 4. 평가 실행 (운영 스키마: evaluation/test_queries.csv 20건 → LLM-judge 채점 → evaluation/round1_report.md)
 python -m src.evaluation.run_eval
+
+# 5. 자체 평가 실행 (출처 정확성 스키마: evaluation/test_self_queries.csv 11건 → self_llm_judge + RAGAS → evaluation/self_test_round1_report.md)
+python -m src.evaluation.self_run_eval
 ```
 
 ## RAGAS 평가 결과
-**아직 실행하지 못했습니다.** `ragas` 라이브러리를 도입하지 않아서 `context_recall`/`context_precision`/`faithfulness`/`answer_relevancy` 수치가 없습니다. 지금은 `src/evaluation/llm_judge.py`의 LLM-as-Judge(5점 만점, expected_traits/forbidden 기반 rubric)로만 채점하고 있습니다. RAGAS 도입이 필요하시면 말씀해주세요.
+`src/evaluation/self_run_eval.py`가 자체 평가(출처 정확성) 케이스마다 RAGAS 4개 지표를 함께 계산해 `evaluation/self_test_round1_report.md`에 참고용으로 남깁니다. 1차 실행(11건) 평균은 다음과 같습니다.
 
-## 인-아웃 세트 통과율 (자체 평가)
+| faithfulness | answer_relevancy | context_precision | context_recall |
+|---|---|---|---|
+| 0.341 | 0.424 | 0.634 | 0.627 |
+
+통과/실패 판정 자체는 지금까지처럼 `self_llm_judge`(출처 URL 일치 여부 중심)로 하고, RAGAS는 보조 지표로만 씁니다. `faithfulness`/`context_precision`이 케이스별로 0.00까지 떨어지는 경우가 있었는데, 실제 답변은 judge가 5점(정확)으로 판정한 케이스였습니다 — RAGAS가 내부적으로 문장을 잘게 쪼개 채점하는 방식과 저희 답변 스타일(짧은 인용 위주) 간의 궁합 문제로 보이며, 원인은 아직 더 봐야 합니다.
+
+## 인-아웃 세트 통과율
+### 운영 스키마 (test_queries.csv, 20건)
 - **1차** (`evaluation/round1_report.md`): **18/20 통과 (90%)**였습니다. positive 7/8, negative 4/4, edge 4/5, guardrail 3/3. 실패한 2건은 #7(Jira 문서 질문, 3점 — 사소한 누락)과 #15(모호한 질문 "설정 파일이 뭐예요?"를 되묻지 않고 특정 파일로 단정해버림, 1점)였습니다.
-- **2차**: 위 2건의 원인을 고쳐서 재실행했습니다 — 결과는 `evaluation/round2_report.md`를 참고해주세요(아래 트라이앤에러 회고에도 정리해뒀습니다).
-- **개선폭**: 2차 결과가 나오는 대로 이 자리에 갱신하겠습니다.
+- **2차** (`evaluation/round2_report.md`): 위 2건의 원인을 고쳐서 재실행한 결과 **20/20 통과 (100%)**였습니다.
+
+### 자체 스키마 - 출처 정확성 (test_self_queries.csv, 11건)
+- **1차** (`evaluation/self_test_round1_report.md`): **10/11 통과 (91%)**였습니다. 정상 7/8, 범위밖 3/3. 실패한 1건은 Chukwa 데이터 흐름 질문(3점 — judge가 출처는 맞지만 답변 내용이 다소 아쉽다고 판단)이었습니다.
+- **2차**: 재실행 결과가 나오는 대로 이 자리에 갱신하겠습니다.
 
 ## 트라이앤에러 회고
 - **시도했지만 실패했던 접근들**
