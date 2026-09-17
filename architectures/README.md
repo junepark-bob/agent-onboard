@@ -17,6 +17,7 @@
 | [0007](0007-src-subpackage-reorganization.md) | `src/` 를 역할별 서브패키지로 재구성하고 `agent/__init__.py`로 내부를 숨김 | 채택 |
 | [0008](0008-performance-instrumentation.md) | 성능 계측은 콜백 기반 실측으로, replay 방식은 계측 사각지대로 재평가 | 채택 (일부 후속 조치 진행 중) |
 | [0009](0009-english-only-domain-language-policy.md) | 대상 도메인이 전부 영어라는 특성에 맞춘 언어 정책 단순화 (이중 검색 폐지, 답변 강제 번역 폐지, 온디맨드 번역 버튼 도입) | 채택 |
+| [0010](0010-router-pattern-for-translation.md) | 라우터 패턴: 번역 백엔드를 Bedrock LLM(기본값)과 로컬 전용 모델(NLLB-200) 중 선택 가능하게 분리 | 채택 |
 
 ## 참고
 각 ADR의 배경이 된 더 상세한 검토/실측 로그는 `data/documents/ISSUES.md`에 있습니다. 이 폴더의 ADR은 그 검토 결과를 "결정"으로 압축·정리한 버전입니다.

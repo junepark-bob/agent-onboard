@@ -4,6 +4,8 @@
 - Python, LangChain, LangGraph
 - 모델은 Amazon Bedrock (ChatBedrockConverse), 임베딩은 BedrockEmbeddings (amazon.titan-embed-text-v2:0)
 - Agent 생성은 langchain.agents 의 create_agent 를 쓴다
+- 한국어<->영어 번역은 라우터 패턴으로 별도 처리한다: Bedrock LLM(기본값)과 로컬 전용 모델
+  (NLLB-200, transformers) 중 TRANSLATION_BACKEND 환경 변수로 고른다 (architectures/0010 참고)
 - 컨플루언스 실시간 조회/검색 도구는 fastmcp 기반 자체 MCP 서버로 제공하고, langchain_mcp_adapters 로 에이전트에 연결한다
 - 모델 서빙은 FastAPI, UI는 라이브러리를 CDN 으로 include 한 단일 HTML 파일
 - 첨부 이미지 분류·텍스트화는 비전 지원 Bedrock 모델(Claude Haiku 우선, 쓰로틀링 시 폴백)을 쓴다
@@ -11,7 +13,7 @@
 
 ## 아키텍처 구성 (5파트)
 모든 파이썬 코드는 `src/` 아래에 있다. `data/`, `evaluation/`, `static/`은 코드가 아닌 산출물(문서/데이터/UI)만 둔다.
-1. **AI 에이전트 파트** — `src/agent/` 서브패키지(`agent.py`, `tools.py`, `retriever.py`, `models.py`)
+1. **AI 에이전트 파트** — `src/agent/` 서브패키지(`agent.py`, `tools.py`, `retriever.py`, `models.py`, `translator.py`)
 2. **모델 서빙 FastAPI 서버 파트** — `src/server/server.py`, `POST /query`(운영 계약)와 `POST /translate`(채팅 UI의 온디맨드 번역용, 계약 외 추가 엔드포인트)를 제공
 3. **UI 파트** — `static/chat.html` 하나. 빌드 없이 CDN include 로 채팅 UI 구성
 4. **크롤링 & RAG 구축 파트** — `src/crawler/crawl_confluence.py` (data/urls.txt 를 읽어 data/raw/ 에 수집, 첨부 이미지는 저비용 비전 모델로 분류·텍스트화해 본문에 삽입) + `src/agent/retriever.py` 의 인덱싱 함수 (data/raw/ → chroma_db 임베딩)
@@ -20,10 +22,11 @@
 ## 폴더 구조
 ```
 src/
-├── agent/                    AI 에이전트 파트 (아래 4개 파일이 이 안에서 서로 참조)
+├── agent/                    AI 에이전트 파트 (아래 5개 파일이 이 안에서 서로 참조)
 │   ├── agent.py                메인 에이전트 그래프
 │   ├── tools.py                 도메인 도구 (MCP 서버)
 │   ├── retriever.py              RAG 파이프라인
+│   ├── translator.py              번역 (Bedrock 기본값 / 로컬 NLLB-200 선택 가능, agent 패키지 __init__ 이 재노출)
 │   └── models.py                  Bedrock 모델 폴백 후보 목록 (전체 공용, agent 패키지 __init__ 이 재노출)
 ├── crawler/crawl_confluence.py   컨플루언스 문서 수집 (data/urls.txt → data/raw/)
 ├── server/server.py               FastAPI 서버, POST /query
@@ -58,12 +61,22 @@ python -m src.evaluation.self_run_eval
 - trace의 각 단계(retrieve/fetch_page/live_search)에는 실제 실행 시간(duration_ms, LangChain
   콜백으로 계측)이 같이 담기고, 마지막에 `performance`(전체/모델 폴백-MCP 준비/LLM/RAG 소요 시간
   합계)와 `api`(API 요청 수신·응답 시각, 왕복 시간) 단계가 추가된다 — 계약의 3키 구조는 그대로다.
+- **`llm_ms`는 에이전트 본체(도구 선택·최종 답 작성)의 Bedrock 호출 시간만 잡는다.** 번역
+  (`rag_search` 안에서 일어남)은 백엔드가 Bedrock이든 로컬 모델이든 항상 `rag_ms` 쪽에 잡히지
+  `llm_ms`에는 절대 포함되지 않는다 — 번역 백엔드를 바꿔도 `llm_ms`가 줄어들 이유가 없다는
+  뜻이다. `llm_ms`가 늘어나는 원인은 대개 Bedrock 쿼터 소진에 따른 폴백/재시도이고, 그건
+  `llm_failed_ms`로 별도로 잡힌다(`architectures/0008-performance-instrumentation.md`
+  "후속 발견 및 수정" 절).
 - 요청마다 성능 지표 한 줄이 루트의 `performance_trace.jsonl`에도 append 된다 (실행 환경마다
   달라지는 로그라 gitignore 대상).
 - 답변은 질문과 같은 언어로 나온다(강제 한국어 번역 없음). RAG 검색은 대상 문서가 전부 영어라
   항상 영어로만 하고, 한국어 질의는 내부에서 영어로 번역해 검색한다. 답변을 한국어로 보고
   싶으면 `POST /translate`(별도 엔드포인트)로 온디맨드 번역을 요청한다
   (`architectures/0009-english-only-domain-language-policy.md`).
+- 번역(`rag_search`의 질의어 번역, `POST /translate`)은 `TRANSLATION_BACKEND` 환경 변수로
+  Bedrock LLM(기본값)과 로컬 NLLB-200 모델 + 도메인 용어집(`src/agent/translator.py`) 중
+  고른다. 로컬 모델은 Bedrock 쿼터와 무관하지만, 성공 호출 기준 속도는 Bedrock과 비슷하고
+  프로세스 재시작 후 첫 호출에 콜드스타트 지연이 있을 수 있다(`architectures/0010-router-pattern-for-translation.md`).
 
 ## 코드 규칙
 - 파일 하나에 한 가지 역할만 둔다

@@ -1,28 +1,21 @@
 """data/raw/ 의 문서를 chroma_db로 임베딩하고 의미 검색을 제공하는 RAG 파이프라인."""
 
 import json
-import re
 from pathlib import Path
 
-from botocore.exceptions import ClientError
 from dotenv import load_dotenv
-from langchain_aws import BedrockEmbeddings, ChatBedrockConverse
+from langchain_aws import BedrockEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from .models import MODEL_CANDIDATES
+from .translator import is_korean, translate
 
 load_dotenv()
 
 EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 REGION = "us-east-1"
 
-TRANSLATE_PROMPT = (
-    "Translate the text below. If it is written in Korean, translate it to English. "
-    "If it is written in English, translate it to Korean. Reply with only the translated "
-    "text and nothing else.\n\n{text}"
-)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # src/agent -> src -> mini-pjt 루트
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 PERSIST_DIR = PROJECT_ROOT / "chroma_db"
@@ -33,8 +26,6 @@ SIMILARITY_THRESHOLD = 0.3
 # 걸러진다. rag_search()가 한국어 질의를 영어로 번역해 이 조건을 항상 보장한다.
 # evaluation/test_queries.csv 의 question_en 10건으로 실측: 정상 7건 top score 0.437~0.825
 # (전부 expected_source_url 1위 적중), 범위밖 3건 top score 0.069~0.222. 0.3은 그 사이 값.
-
-_HANGUL_PATTERN = re.compile(r"[가-힣]")
 
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
@@ -75,30 +66,6 @@ def build_index(raw_dir: Path = RAW_DIR, persist_dir: Path = PERSIST_DIR) -> Non
     )
 
 
-def _is_korean(text: str) -> bool:
-    """텍스트에 한글 음절이 하나라도 있으면 한국어로 판단한다."""
-    return bool(_HANGUL_PATTERN.search(text))
-
-
-def translate(text: str) -> str:
-    """text가 한국어면 영어로, 영어면 한국어로 번역한 결과만 돌려준다.
-
-    쓰로틀링이 나면 MODEL_CANDIDATES 순서대로 다음 모델로 재시도한다. rag_search의 한국어
-    질의어 번역(한국어->영어)과, 채팅 UI의 답변 번역 요청(영어->한국어, src/server/server.py의
-    POST /translate) 양쪽에서 재사용한다.
-    """
-    prompt = TRANSLATE_PROMPT.format(text=text)
-    last_error: Exception | None = None
-    for model_id in MODEL_CANDIDATES:
-        try:
-            llm = ChatBedrockConverse(model=model_id, region_name=REGION, temperature=0)
-            return llm.invoke(prompt).content.strip()
-        except ClientError as exc:
-            last_error = exc
-            print(f"[번역 모델 폴백] {model_id} 실패({exc}), 다음 모델로 재시도합니다.")
-    raise RuntimeError(f"모든 번역 후보 모델이 실패했습니다: {last_error}") from last_error
-
-
 def _vector_search(query: str, k: int) -> list[dict]:
     """번역 없이, 주어진 질의어 그대로 chroma_db를 검색해 title/url/content/score 목록을 반환한다."""
     vectorstore = Chroma(
@@ -127,7 +94,7 @@ def rag_search(query: str, k: int = 5) -> list[dict]:
     (한국어 원문 검색은 교차언어 유사도 저하로 항상 지고, 영어 질의의 한국어 번역본 검색도
     이길 일이 없다) — `architectures/0009-english-only-domain-language-policy.md` 참고.
     """
-    search_query = translate(query) if _is_korean(query) else query
+    search_query = translate(query) if is_korean(query) else query
     return _vector_search(search_query, k)
 
 

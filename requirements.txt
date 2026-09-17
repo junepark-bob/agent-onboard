@@ -16,6 +16,14 @@ langchain-text-splitters==1.1.2
 langchain-chroma==1.1.0
 chromadb==1.5.9
 
+# 번역 (src/agent/translator.py) - 기본값은 Bedrock LLM이라 아래 4개는 선택 사항이다.
+# TRANSLATION_BACKEND=local 로 로컬 전용 번역 모델(NLLB-200)을 쓸 때만 필요하다(지연 임포트).
+# CPU 전용 wheel은 --index-url https://download.pytorch.org/whl/cpu 로 설치해야 한다.
+torch==2.14.0
+transformers==5.17.0
+sentencepiece==0.2.2
+sacremoses==0.2.0
+
 # MCP (src/agent/tools.py, src/agent/agent.py) - Confluence 도구 서버 및 연결
 mcp==1.30.0
 fastmcp==2.13.0

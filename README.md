@@ -45,11 +45,12 @@ python -m src.evaluation.self_run_eval
 ```
 
 ## RAGAS 평가 결과
-`src/evaluation/self_run_eval.py`가 자체 평가(출처 정확성) 케이스마다 RAGAS 4개 지표를 함께 계산해 `evaluation/self_test_round1_report.md`에 참고용으로 남깁니다. 1차 실행(11건) 평균은 다음과 같습니다.
+`src/evaluation/self_run_eval.py`가 자체 평가(출처 정확성) 케이스마다 RAGAS 4개 지표를 함께 계산해 `evaluation/self_test_round1_report.md`/`round2_report.md`에 참고용으로 남깁니다.
 
-| faithfulness | answer_relevancy | context_precision | context_recall |
-|---|---|---|---|
-| 0.341 | 0.424 | 0.634 | 0.627 |
+| | faithfulness | answer_relevancy | context_precision | context_recall |
+|---|---|---|---|---|
+| 1차 | 0.341 | 0.424 | 0.634 | 0.627 |
+| 2차 | 0.376 | 0.434 | 0.479 | 0.651 |
 
 통과/실패 판정 자체는 지금까지처럼 `self_llm_judge`(출처 URL 일치 여부 중심)로 하고, RAGAS는 보조 지표로만 씁니다. `faithfulness`/`context_precision`이 케이스별로 0.00까지 떨어지는 경우가 있었는데, 실제 답변은 judge가 5점(정확)으로 판정한 케이스였습니다 — RAGAS가 내부적으로 문장을 잘게 쪼개 채점하는 방식과 저희 답변 스타일(짧은 인용 위주) 간의 궁합 문제로 보이며, 원인은 아직 더 봐야 합니다.
 
@@ -60,7 +61,7 @@ python -m src.evaluation.self_run_eval
 
 ### 자체 스키마 - 출처 정확성 (test_self_queries.csv, 11건)
 - **1차** (`evaluation/self_test_round1_report.md`): **10/11 통과 (91%)**였습니다. 정상 7/8, 범위밖 3/3. 실패한 1건은 Chukwa 데이터 흐름 질문(3점 — judge가 출처는 맞지만 답변 내용이 다소 아쉽다고 판단)이었습니다.
-- **2차**: 재실행 결과가 나오는 대로 이 자리에 갱신하겠습니다.
+- **2차** (`evaluation/self_test_round2_report.md`): **10/11 통과 (91%)**로 동일했습니다. 다만 실패한 케이스가 바뀌었습니다 — 1차에서 실패했던 Chukwa 질문은 2차에서 5점으로 통과했고, 대신 CodeReviewChecklist 질문이 `ThrottlingException`(Bedrock 일일 토큰 쿼터 소진) 실행 오류로 채점되지 못해 0점 처리됐습니다. 즉 두 라운드 모두 실패한 건 실제 답변 품질 문제가 아니라 judge/쿼터 변동성이었고, 코드 결함으로 보이는 재현 가능한 실패는 없었습니다.
 
 ## 트라이앤에러 회고
 - **시도했지만 실패했던 접근들**
@@ -75,7 +76,7 @@ python -m src.evaluation.self_run_eval
   - 1차 라운드(20건)에서 실패했던 2건(#7 Jira 문서 질문 3점, #15 모호한 질문을 단정해버려서 1점)은 원인을 찾아 고쳤고, 2차에서 다시 검증했습니다.
   - 가드레일(PII/프롬프트 인젝션 방어)을 위한 전용 미들웨어는 없지만, guardrail 카테고리 3건은 시스템 프롬프트만으로 1차 라운드에서 전부(3/3) 통과했습니다. Multi-Agent Supervisor, Plan-Execute, 장기 메모리는 스코프 아웃으로 결정하고 적용하지 않았습니다.
   - 이미지 분류는 "사진/도표" 유형만 실측으로 확인했고, "문서 캡처"나 "도표가 있는 문서" 유형은 대상 스페이스(HADOOP2)에 아예 없어서 검증하지 못했습니다 (`data/documents/ISSUES.md` 2절).
-  - **응답 속도가 너무 느립니다 (일부 해결, 나머지 진행 중)**: `agent.ainvoke()`에 LangChain 콜백으로 단계별 소요 시간을 계측해보니(`src/agent/agent.py`의 `PerformanceTracker`), 실제 질의 하나에 33초가 걸렸습니다 — LLM 호출 19.3초(58%, ReAct 루프가 순차적으로 Bedrock을 2회 이상 호출하는 구조적 원인), `rag_search` 5.3초(16%, 번역 1회 + 원문/번역본 이중 벡터 검색), MCP 서버 기동 2.2초(7%, 요청마다 stdio 서브프로세스를 새로 띄움), 그리고 계측되지 않은 6.3초(19%)로 나뉩니다. 미계측 구간을 코드로 추적해보니 `agent.py`가 `contexts`/`trace`를 구조화하려고 이미 실행된 `rag_search`를 답변 생성 후 **한 번 더 그대로 재실행**하고 있었습니다 — 즉 요청당 `rag_search`가 실질적으로 두 번 돌면서 시간과 Bedrock 호출 비용이 그만큼 더 들고 있었습니다(이 중복 실행 자체는 아직 남아 있습니다). 그중 `rag_search` 쪽은 대상 문서가 전부 영어라는 도메인 특성에 맞춰 이중 검색을 폐지해 실측 5초대에서 1초대로 줄였습니다(`architectures/0009-english-only-domain-language-policy.md`). 그런데 이 최적화 이후 오히려 `total_ms`가 33초 → 57초로 늘어난 사례가 나와서 다시 조사했더니, 세션 내내 소진돼온 Bedrock 일일 토큰 쿼터 때문에 1순위 모델이 반복 쓰로틀링되고 있었고, 게다가 `PerformanceTracker`가 실패한 모델 호출은 아예 계측하지 못하는(성공 콜백만 구현) 두 번째 계측 사각지대까지 있었습니다. `on_llm_error`/`on_tool_error`를 추가하고, 모델 폴백 루프 안에서 매번 새로 만들던 tracker를 루프 밖에서 한 번만 만들도록 고쳐서(안 그러면 실패한 시도의 기록이 다음 시도로 넘어가며 버려짐) `llm_failed_ms`/`tool_failed_ms`로 쓰로틀링 대기 시간이 실측 14.9초까지 드러나도록 만들었습니다(`architectures/0008-performance-instrumentation.md` "후속 발견 및 수정" 절). 남은 1.5일 동안 `rag_search` 중복 실행 제거(ainvoke 실행 중 나온 실제 tool 결과 재사용), MCP 서브프로세스 재사용, 필요시 모델 교체/스트리밍까지 순서대로 고치면서 이 문단을 갱신할 계획입니다.
+  - **응답 속도가 너무 느립니다 (일부 해결, 나머지 진행 중)**: `agent.ainvoke()`에 LangChain 콜백으로 단계별 소요 시간을 계측해보니(`src/agent/agent.py`의 `PerformanceTracker`), 실제 질의 하나에 33초가 걸렸습니다 — LLM 호출 19.3초(58%, ReAct 루프가 순차적으로 Bedrock을 2회 이상 호출하는 구조적 원인), `rag_search` 5.3초(16%, 번역 1회 + 원문/번역본 이중 벡터 검색), MCP 서버 기동 2.2초(7%, 요청마다 stdio 서브프로세스를 새로 띄움), 그리고 계측되지 않은 6.3초(19%)로 나뉩니다. 미계측 구간을 코드로 추적해보니 `agent.py`가 `contexts`/`trace`를 구조화하려고 이미 실행된 `rag_search`를 답변 생성 후 **한 번 더 그대로 재실행**하고 있었습니다 — 즉 요청당 `rag_search`가 실질적으로 두 번 돌면서 시간과 Bedrock 호출 비용이 그만큼 더 들고 있었습니다(이 중복 실행 자체는 아직 남아 있습니다). 그중 `rag_search` 쪽은 대상 문서가 전부 영어라는 도메인 특성에 맞춰 이중 검색을 폐지해 실측 5초대에서 1초대로 줄였습니다(`architectures/0009-english-only-domain-language-policy.md`). 그런데 이 최적화 이후 오히려 `total_ms`가 33초 → 57초로 늘어난 사례가 나와서 다시 조사했더니, 세션 내내 소진돼온 Bedrock 일일 토큰 쿼터 때문에 1순위 모델이 반복 쓰로틀링되고 있었고, 게다가 `PerformanceTracker`가 실패한 모델 호출은 아예 계측하지 못하는(성공 콜백만 구현) 두 번째 계측 사각지대까지 있었습니다. `on_llm_error`/`on_tool_error`를 추가하고, 모델 폴백 루프 안에서 매번 새로 만들던 tracker를 루프 밖에서 한 번만 만들도록 고쳐서(안 그러면 실패한 시도의 기록이 다음 시도로 넘어가며 버려짐) `llm_failed_ms`/`tool_failed_ms`로 쓰로틀링 대기 시간이 실측 14.9초까지 드러나도록 만들었습니다(`architectures/0008-performance-instrumentation.md` "후속 발견 및 수정" 절). 남은 1.5일 동안 `rag_search` 중복 실행 제거(ainvoke 실행 중 나온 실제 tool 결과 재사용), MCP 서브프로세스 재사용, 필요시 모델 교체/스트리밍까지 순서대로 고치면서 이 문단을 갱신할 계획입니다. 그 뒤 번역(`rag_search`의 질의어 번역)을 로컬 모델(NLLB-200)로 옮겨봤는데, 다시 `rag_ms`/`llm_ms`가 늘어난 로그가 나와서 조사했더니 둘 다 번역 전환과는 무관했습니다 — `llm_ms`는 애초에 번역 시간을 포함한 적이 없어서(에이전트 본체 호출만 잡음) 그 시점에 커진 `llm_failed_ms`(쓰로틀링 재시도, 14.9초→29.5초) 때문이었고, `rag_ms`는 로컬 모델의 콜드스타트 변동성(프로세스 시작 직후 첫 호출만 느림, 안정 시엔 Bedrock과 동등) 때문이었습니다. 정확성은 개선됐지만(도메인 고유명사 오역 수정) 속도 이득은 없다는 걸 확인하고, `TRANSLATION_BACKEND` 환경 변수로 Bedrock(기본값)/로컬 모델을 선택할 수 있게 바꿨습니다(`architectures/0010-router-pattern-for-translation.md`).
 
 ## 핵심 코드 위치
 - `src/agent/agent.py:110` — `run_query()`, API의 메인 진입점입니다 (모델 폴백 재시도 + trace/contexts 조립 + 성능 계측)
@@ -121,6 +122,7 @@ pip install -r mini-pjt/requirements.txt
 | `AWS_DEFAULT_REGION` | 필수 | `us-east-1`로 설정해주세요 |
 | `CONFLUENCE_BASE_URL` | 선택 | 기본값은 `https://cwiki.apache.org/confluence`입니다. 사내 컨플루언스로 바꾸실 때는 이 값만 교체하시면 됩니다 |
 | `CONFLUENCE_AUTH_TOKEN` | 선택 | ASF 공개 스페이스는 비워두셔도 됩니다. 인증이 필요한 인스턴스라면 Bearer 토큰을 지정해주세요 |
+| `TRANSLATION_BACKEND` | 선택 | 번역 백엔드입니다. 기본값은 `bedrock`이고, `local`로 지정하면 로컬 NLLB-200 모델을 씁니다(`torch`/`transformers` 필요, `architectures/0010-router-pattern-for-translation.md` 참고) |
 
 ### API 계약
 ```
